@@ -1,5 +1,7 @@
 # Blue-Star Pet
 
+**本项目完全由 Codex 制作。**
+
 以 Project Moon《脑叶公司》中的异想体「碧蓝新星」为原型，用 WPF 制作的 Windows 同人桌宠。点一下心核，它会发出「新星之声」。环绕心核的小星星也可以用来暂存文件，方便稍后拖到目标文件夹。
 
 ![碧蓝新星桌宠演示](assets/preview.gif)
