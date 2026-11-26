@@ -79,8 +79,9 @@ namespace BlueStar
             if(yielding) Weight=Math.Max(0,Weight-dt/0.28);
             if(Act==IdleAct.Listen && mouseNear) heardMouse=true;
             if(heardMouse) Turn=Math.Min(1,Turn+dt/0.50);
-            if(Age>=duration || Weight<=0) { Act=IdleAct.None; Weight=0; Flight=null; }
+            if(Age>=duration || Weight<=0) Stop();
         }
+        public void Stop() { Act=IdleAct.None; Weight=0; Flight=null; }
         public double DepthAt(double t)
         {
             if(Act!=IdleAct.Dip) return 0;

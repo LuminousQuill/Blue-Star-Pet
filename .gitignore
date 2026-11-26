@@ -1,0 +1,9 @@
+# Local build and release packages
+/BlueStar.exe
+/Blue-Star-Pet-Windows.zip
+/碧蓝新星桌宠-Windows.zip
+
+# Local reference audio and alternate preview
+/BlueStar_ogg/
+/assets/meteor.wav
+/assets/preview.mp4

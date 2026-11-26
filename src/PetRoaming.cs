@@ -42,7 +42,11 @@ namespace BlueStar
             roaming=Settings.Roaming=enabled;
             ResetRoam(); Persist();
         }
-        void ResetRoam() { roamHome=null; roamStep=RoamStep.Rest; roamWait=4; }
+        void ResetRoam()
+        {
+            if(roamStep!=RoamStep.Rest) audio.FadeMotion();
+            roamHome=null; roamStep=RoamStep.Rest; roamWait=4;
+        }
 
         void SetPresence(double value)
         {
@@ -63,6 +67,7 @@ namespace BlueStar
             e.Cancel=true;
             if(exiting) return;
             exiting=true; exitStart=elapsed.Elapsed.TotalSeconds; exitPresence=Art.Presence;
+            audio.PlayMotion(PetCue.Disappear);
             AllowDrop=false; IsHitTestVisible=false;
             CloseStarFiles();
             if(panel!=null) panel.Close();
@@ -115,13 +120,15 @@ namespace BlueStar
             roamBend=ClampPoint(roamFrom+path*0.50+new Vector(-path.Y,path.X)*(idleRandom.NextDouble()*0.42-0.21),limits);
             roamDuration=2.2+path.Length/(Width*0.18); roamAge=0;
             roamStep=blink?RoamStep.BlinkOut:RoamStep.Drift;
+            if(blink) audio.PlayMotion(PetCue.Blink);
+            else audio.PlayRoam(idleRandom);
             if(blink) Art.BlinkHeading=path/path.Length;
         }
         bool AdvanceRoaming(double now,double dt,Point cursor)
         {
             bool busy=!roaming || NearWindow(cursor) || InteractionBusy(now) || fileLeftAt>=0 || orbits.Fold>0 || Art.Idle.Act!=IdleAct.None;
             if(roamStep==RoamStep.BlinkOut && NearWindow(cursor-(roamTo-roamFrom))) busy=true;
-            if(busy) roamStep=RoamStep.Rest;
+            if(busy && roamStep!=RoamStep.Rest) { audio.FadeMotion(); roamStep=RoamStep.Rest; }
             if(roamStep!=RoamStep.Drift) Art.Swim.Settle(dt);
             if(roamStep!=RoamStep.BlinkOut && Art.Presence==1) Art.BlinkHeading=new Vector();
             if(roamStep==RoamStep.BlinkOut)

@@ -105,7 +105,7 @@ namespace BlueStar
             return 1-Smooth((age-0.50)/0.85);
         }
         public void Bend(double time) { bendStart=BendAmount(time); bendAt=time; }
-        public void Pose(Point3D[] output,int start,double time,double fold,double tilt,
+        public void Pose(Point3D[] output,int start,double time,double poseTime,double fold,double tilt,
                          double lift,double breath,double cx,double cy,double aim,IdleMotion idle,DragWake wake,Vector glide,double presence,bool departing,RoamStroke swim)
         {
             double hipSweep=0,ankleLag=0;
@@ -171,10 +171,10 @@ namespace BlueStar
                 paddle=swim.Strength*(heading*(10*brake*longness-thrust)+across*(flank*wing*(9*up*push+15*down*brake)));
                 ankleLag+=side*Vector.CrossProduct(ankleLever,heading)*swim.Strength*(0.28*push-0.23*brake);
             }
-            double sway=still*Math.Sin(time*(1.05+0.08*template)+phase);
+            double sway=still*Math.Sin(poseTime*(1.05+0.08*template)+phase);
             double hip=direction+tilt+0.041*sway+side*(0.19*fold+lift*0.032)+hipSweep;
-            double knee=(template==2?0.72:0.9)*fold+still*0.085*Math.Sin(time*1.37+phase)-side*tilt*0.5;
-            double ankle=-0.43*fold+still*0.075*Math.Sin(time*1.65+phase+0.8)+ankleLag;
+            double knee=(template==2?0.72:0.9)*fold+still*0.085*Math.Sin(poseTime*1.37+phase)-side*tilt*0.5;
+            double ankle=-0.43*fold+still*0.075*Math.Sin(poseTime*1.65+phase+0.8)+ankleLag;
             Vector drag=wake.Load(longness,longest);
             double footAngle=0.40*Vector.CrossProduct(ankleLever,drag);
             Vector load=drag*21-ankleArm*footAngle+paddle;

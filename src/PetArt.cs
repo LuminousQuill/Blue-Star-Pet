@@ -19,7 +19,13 @@ namespace BlueStar
         readonly byte[] atlasAlpha;
         readonly int atlasWidth,atlasHeight;
         readonly Effects behind,front;
-        public double Time,AimX,AimY,Attention,Gravity,PulseAge=10,MealAge=10,EjectAge=10,Seal;
+        double time,poseTime;
+        public double Time
+        {
+            get { return time; }
+            set { if(FocusProgress<0) poseTime+=value-time; time=value; }
+        }
+        public double AimX,AimY,Attention,Gravity,PulseAge=10,MealAge=10,EjectAge=10,Seal;
         public double HoverWeight,MealWeight,AmbientAge=10;
         public const double AmbientWindup=0.95;
         double MealPhase { get { return MealAge/(0.95+0.80*MealWeight); } }
@@ -145,11 +151,11 @@ namespace BlueStar
             fold+=0.93*closed+tuck*0.45-expel*0.28;
             fold+=drawIn*(0.09+0.12*HoverWeight)+squeeze*(0.24+0.34*MealWeight)-rebound*0.10+gather*0.42-unfurl*0.19;
             double drift=1-0.82*Idle.Still;
-            double breath=1+0.009*drift*Math.Sin(Time*2.1)-0.055*squeeze;
-            double tilt=drift*0.034*Math.Sin(Time*0.94)+AimX*0.14+DragLean;
+            double breath=1+0.009*drift*Math.Sin(poseTime*2.1)-0.055*squeeze;
+            double tilt=drift*0.034*Math.Sin(poseTime*0.94)+AimX*0.14+DragLean;
             Vector glide=Idle.GlideAt(Idle.Age);
-            double cx=drift*2.4*Math.Sin(Time*0.83)+AimX*11+glide.X;
-            double cy=-12+drift*(5.7*Math.Sin(Time*1.34)+1.2*Math.Sin(Time*2.27))+AimY*8+Idle.DepthAt(Idle.Age)+glide.Y;
+            double cx=drift*2.4*Math.Sin(poseTime*0.83)+AimX*11+glide.X;
+            double cy=-12+drift*(5.7*Math.Sin(poseTime*1.34)+1.2*Math.Sin(poseTime*2.27))+AimY*8+Idle.DepthAt(Idle.Age)+glide.Y;
             Vector lead=Swim.Heading*(Swim.Strength*IdleMotion.Beat(Swim.Phase,0.19,0.58,0.97));
             tilt+=lead.X*0.105;
             double brace=0,impact=0;
@@ -165,15 +171,15 @@ namespace BlueStar
             }
             Vector distantGaze=Idle.Direction*10,mouseGaze=new Vector(AimX,AimY)*6.2;
             starOffset=(distantGaze+(mouseGaze-distantGaze)*Ease(Idle.Turn))*Idle.Look+lead*5.6+blinkLean*7;
-            for(int i=0;i<legs.Length;i++) legs[i].Pose(positions,i*LegRig.VertexCount,Time,fold,tilt,DragLift,breath,cx,cy,AimX,Idle,Wake,glide,presence,departing,Swim);
+            for(int i=0;i<legs.Length;i++) legs[i].Pose(positions,i*LegRig.VertexCount,Time,poseTime,fold,tilt,DragLift,breath,cx,cy,AimX,Idle,Wake,glide,presence,departing,Swim);
             var points=new Point3DCollection(positions);points.Freeze();mesh.Positions=points;
             double bank=Idle.BankAt(Idle.Age-0.18);
             coreAspect=(1-0.17*bank*bank)*(1+0.08*lead.Y);
             Heart=new Point((0.5+(cx+AimX*5+5*bank+2.2*lead.X)/300)*ActualWidth,(0.5+(cy+AimY*4+2.2*lead.Y)/300)*ActualHeight);
             double heartbeat=0.5-0.5*Math.Cos(2*Math.PI*age*2.0);
             CoreSize=breath+charge*(0.15+0.15*heartbeat)+0.29*flare+drawIn*(0.10+0.19*HoverWeight)
-                -squeeze*(0.25+0.30*MealWeight)+rebound*(0.17+0.47*MealWeight)-gather*0.17+unfurl*0.23-tuck*0.22+expel*0.34+flash*0.05;
-            CoreLight=Math.Min(1.85,0.58+0.06*Math.Sin(Time*2.2)+Attention*0.54+drawIn*(0.29+0.26*HoverWeight)
+                -squeeze*(0.25+0.30*MealWeight)+rebound*(0.17+0.47*MealWeight)-gather*0.17+unfurl*0.23-tuck*0.22+expel*0.34;
+            CoreLight=Math.Min(1.85,0.58+0.06*Math.Sin(poseTime*2.2)+Attention*0.54+drawIn*(0.29+0.26*HoverWeight)
                 +charge*(0.42+0.34*heartbeat)+0.71*flare+rebound*(0.62+0.48*MealWeight)+gather*0.40+unfurl*0.58+expel*0.72+focusLight)*(1-0.73*closed);
             if(presence<1)
             {
@@ -427,10 +433,10 @@ namespace BlueStar
                     dc.Pop();
                     for (int i=0; i<13; i++)
                     {
-                        double a = t*(0.19+i%3*0.06)+i*2.39996;
+                        double a = pet.poseTime*(0.19+i%3*0.06)+i*2.39996;
                         double r = 96+i%5*6;
                         var p = new Point(c.X+Math.Cos(a)*r,c.Y+Math.Sin(a)*r*0.7);
-                        dc.PushOpacity(0.22+0.4*(0.5+0.5*Math.Sin(t*1.3+i)));
+                        dc.PushOpacity(0.22+0.4*(0.5+0.5*Math.Sin(pet.poseTime*1.3+i)));
                         dc.DrawEllipse(i%2==0?Ice:Blue,null,p,i%3==0?1.5:0.9,i%3==0?1.5:0.9);
                         dc.Pop();
                     }
@@ -459,7 +465,7 @@ namespace BlueStar
                         dc.PushOpacity(Math.Min(0.76,pet.CoreLight-0.82));
                         dc.DrawEllipse(Glow,null,new Point(),29,23);dc.Pop();
                     }
-                    double breath=0.5+0.5*Math.Sin(t*(1.8+pet.Gravity));
+                    double breath=0.5+0.5*Math.Sin(pet.poseTime*(1.8+pet.Gravity));
                     double shine=Math.Min(1,pet.CoreLight+0.27*pet.Gravity);
                     double size=4+shine*shine*(9+3*breath)+16*flash;
                     if(pet.presence<0.56)

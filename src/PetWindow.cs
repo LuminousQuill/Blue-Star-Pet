@@ -123,7 +123,7 @@ namespace BlueStar
             binTimer.Tick+=PollBin;
             FocusDuration=TimeSpan.FromMinutes(25);
             idleWait=9+idleRandom.NextDouble()*9;
-            Loaded+=delegate { FitToScreen(); SetPresence(0); last=elapsed.Elapsed.TotalSeconds; Art.Draw(); CompositionTarget.Rendering+=OnFrame; PollBin(null,EventArgs.Empty); binTimer.Start(); };
+            Loaded+=delegate { FitToScreen(); SetPresence(0); last=elapsed.Elapsed.TotalSeconds; audio.PlayMotion(PetCue.Appear); Art.Draw(); CompositionTarget.Rendering+=OnFrame; PollBin(null,EventArgs.Empty); binTimer.Start(); };
             Closed+=delegate { CompositionTarget.Rendering-=OnFrame; binTimer.Stop(); EndFileHover(); Persist(); audio.Dispose(); };
         }
         public void Chime() { audio.Play(PetCue.Chime); }
@@ -202,11 +202,15 @@ namespace BlueStar
         public void StartFocus(TimeSpan duration)
         {
             FocusDuration=duration; focusEnd=DateTime.UtcNow+duration;
+            Art.FocusProgress=0;
+            Art.Idle.Stop(); roamStep=RoamStep.Rest; Art.Swim.Strength=0;
+            if(meteor!=null) { meteor.Close(); meteor=null; }
+            SetPresence(1); audio.FadeMotion();
             Say("洞察观测  "+ClockText(duration.TotalSeconds),3);
         }
         public void CancelFocus()
         {
-            focusEnd=DateTime.MinValue; Say("观测已取消",2);
+            focusEnd=DateTime.MinValue; Art.FocusProgress=-1; Say("观测已取消",2);
         }
         public async void RequestReturn()
         {
@@ -283,6 +287,7 @@ namespace BlueStar
             bool busy=InteractionBusy(now) || roamStep!=RoamStep.Rest || Art.Presence<1;
             if(Art.Idle.Act!=IdleAct.None)
             {
+                if(busy && Art.Idle.Act==IdleAct.Constellation) audio.FadeMotion();
                 Art.Idle.Advance(dt,busy,mouseNear); return;
             }
             if(busy || (idleWait-=dt)>0) return;
@@ -304,9 +309,11 @@ namespace BlueStar
                 var center=new Point(Left+Art.Heart.X,Top+Art.Heart.Y);
                 if(!screen.Contains(center)) return;
                 flight=MeteorFlight.Choose(idleRandom,center,Width/300*Art.CoreSize,Art.CoreTilt,screen);
-                dir=flight.CatchSide; meteor=new MeteorWindow(this,flight,screen); meteor.Show();
+                dir=flight.CatchSide; meteor=new MeteorWindow(this,flight,screen);
             }
             Art.BeginIdle(act,dir,flight);
+            if(act==IdleAct.Meteor) meteor.Show();
+            if(act==IdleAct.Constellation) audio.PlayMotion(PetCue.Constellation);
         }
         void Tick(object sender,EventArgs args)
         {
@@ -332,9 +339,12 @@ namespace BlueStar
             double x=(cursor.X-Width/2)/(Width*0.55), y=(cursor.Y-Height*0.43)/(Height*0.55);
             double near=Math.Min(1,Math.Max(0,1.18-Math.Sqrt(x*x+y*y)*0.52)), blend=1-Math.Exp(-9*dt);
             double aim=moving || coasting?0:near;
-            Art.AimX+=(Math.Max(-1,Math.Min(1,x))*aim-Art.AimX)*blend;
-            Art.AimY+=(Math.Max(-1,Math.Min(1,y))*aim-Art.AimY)*blend;
-            Art.Attention+=(near-Art.Attention)*blend;
+            if(!FocusRunning)
+            {
+                Art.AimX+=(Math.Max(-1,Math.Min(1,x))*aim-Art.AimX)*blend;
+                Art.AimY+=(Math.Max(-1,Math.Min(1,y))*aim-Art.AimY)*blend;
+                Art.Attention+=(near-Art.Attention)*blend;
+            }
             if(binPulseQueued && !releasePending && wave==null)
             { binPulseQueued=false; StartResonance(); }
             audio.Advance(dt);
