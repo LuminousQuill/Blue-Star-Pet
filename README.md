@@ -99,7 +99,36 @@ _程序渲染预览：星空心核随充能逐步增亮，不是整屏桌面截�
 ## 所有版本
 
 <!-- release-catalog:start -->
-- [v1.0.0](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.0.0) — [Windows ZIP](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.0.0/Blue-Star-Pet-Windows.zip)
+最新: [Blue-Star Pet v1.1.0](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.1.0)
+
+| 版本 | 发布日期 | 版本说明 |
+| --- | --- | --- |
+| `v1.1.0` | 2026-11-28 | [查看](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.1.0) |
+| `v1.0.0` | 2026-11-26 | [查看](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.0.0) |
+
+<details>
+<summary><strong>下载文件</strong></summary>
+
+### Blue-Star Pet v1.1.0
+
+版本说明: [查看](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.1.0)
+
+- [Blue-Star-Pet-Windows.zip](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.1.0/Blue-Star-Pet-Windows.zip) — 14.1 MB
+- [FILE_MANIFEST.md](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.1.0/FILE_MANIFEST.md) — 498 B
+- [release-manifest.json](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.1.0/release-manifest.json) — 775 B
+- [SHA256SUMS.txt](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.1.0/SHA256SUMS.txt) — 92 B
+- [源码 ZIP](https://github.com/LuminousQuill/Blue-Star-Pet/archive/refs/tags/v1.1.0.zip)
+- [源码 TAR.GZ](https://github.com/LuminousQuill/Blue-Star-Pet/archive/refs/tags/v1.1.0.tar.gz)
+
+### Blue-Star Pet v1.0.0
+
+版本说明: [查看](https://github.com/LuminousQuill/Blue-Star-Pet/releases/tag/v1.0.0)
+
+- [Blue-Star-Pet-Windows.zip](https://github.com/LuminousQuill/Blue-Star-Pet/releases/download/v1.0.0/Blue-Star-Pet-Windows.zip) — 10.3 MB
+- [源码 ZIP](https://github.com/LuminousQuill/Blue-Star-Pet/archive/refs/tags/v1.0.0.zip)
+- [源码 TAR.GZ](https://github.com/LuminousQuill/Blue-Star-Pet/archive/refs/tags/v1.0.0.tar.gz)
+
+</details>
 <!-- release-catalog:end -->
 
 ## 项目与素材声明
