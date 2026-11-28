@@ -20,20 +20,25 @@ namespace BlueStar
         readonly Brush fileSurface=new SolidColorBrush(Color.FromArgb(1,14,27,37));
         bool fileDragLatched,latchReleased,starMoved,canRecycleHover;
         FileStar exportingStar;
+        bool exportingWholeStar;
         const double ReentryGrace=0.65;
         double fileLeftAt=-1;
         Point starPress;
 
         void UpdateFileSurface(Point cursor)
         {
-            bool down=DragButtonDown();
+            // A drag can only use the filler close to the pet. Outside that area, only a
+            // pending leave or an unreleased latch needs another native button sample.
+            bool near=cursor.X>=-24 && cursor.Y>=-24 && cursor.X<=Width+24 && cursor.Y<=Height+24;
+            bool acceptsSurface=near && !pressed && orbits.Grabbed==null &&
+                (exportingStar==null || exportingWholeStar);
+            bool down=(acceptsSurface || fileLeftAt>=0 || (fileDragLatched && !latchReleased)) && DragButtonDown();
             if(fileDragLatched && !down) latchReleased=true;
             if(fileLeftAt>=0 && (!down || elapsed.Elapsed.TotalSeconds-fileLeftAt>ReentryGrace))
                 EndFileHover();
             // Layered windows normally pass transparent pixels through to the window behind them.
             // Fill the gaps between legs only during an incoming drag so a circle stays on one OLE target.
-            bool near=cursor.X>=-24 && cursor.Y>=-24 && cursor.X<=Width+24 && cursor.Y<=Height+24;
-            Brush surface=down && near && !pressed && orbits.Grabbed==null && exportingStar==null?fileSurface:Brushes.Transparent;
+            Brush surface=down && acceptsSurface?fileSurface:Brushes.Transparent;
             if(grid.Background!=surface) grid.Background=surface;
         }
 
@@ -42,6 +47,11 @@ namespace BlueStar
             var p=e.GetPosition(this);
             if(orbits.Sealed && Art.InsideHeart(p)) return false;
             var star=orbits.Hit(p);
+            if(star==null && e.StylusDevice==null && mouseDownPixel.HasValue)
+            {
+                p=PointFromScreen(mouseDownPixel.Value);
+                if(!orbits.Sealed || !Art.InsideHeart(p)) star=orbits.Hit(p);
+            }
             if(star==null) return false;
             mouseDownPixel=null; starMoved=false; starPress=p;
             orbits.Grabbed=star; orbits.GrabPoint=p;
@@ -53,8 +63,12 @@ namespace BlueStar
             if(star==null) return false;
             Point point=e.GetPosition(this);
             bool dragged=starMoved || (point-starPress).Length>=SystemParameters.MinimumHorizontalDragDistance;
+            Point anchor=point;
+            bool pin=dragged && ReferenceTarget(star.Paths,point,out anchor);
             orbits.Grabbed=null; ReleaseMouseCapture(); e.Handled=true;
-            if(dragged && !orbits.Sealed && !handlingDrop && !binCommand && Art.InsideHeart(point)) BeginRecycle(star.Paths,star);
+            if(!pin) ClearReferencePreview();
+            if(pin) OpenReference(star,anchor);
+            else if(dragged && !orbits.Sealed && !handlingDrop && !binCommand && Art.InsideHeart(point)) BeginRecycle(star.Paths,star);
             else
             {
                 EndFileHover();
@@ -99,7 +113,7 @@ namespace BlueStar
                 string path=selected; selected=null; e.Handled=true;
                 if(files.IsMouseCaptured) files.ReleaseMouseCapture();
                 popup.IsOpen=false;
-                ExportFiles(star,new[]{path},anchor);
+                ExportFiles(star,new[]{path},anchor,star.Paths.Length==1);
             };
             popup.Closed+=delegate { if(starFiles==popup) starFiles=null; };
             starFiles=popup; popup.IsOpen=true;
@@ -111,19 +125,24 @@ namespace BlueStar
             var p=e.GetPosition(this); orbits.GrabPoint=p;
             if((p-starPress).Length<SystemParameters.MinimumHorizontalDragDistance && !starMoved) return;
             starMoved=true; e.Handled=true;
+            Point anchor;
+            if(ReferenceTarget(star.Paths,p,out anchor)) { PreviewReference(anchor,p); return; }
+            ClearReferencePreview();
+            if(!HasReference && star.Paths.Length==1 && PinnedViewer.IsMedia(star.Paths[0]) &&
+                new Rect(0,0,ActualWidth,ActualHeight).Contains(p)) return;
             if((p-Art.Heart).Length<Math.Max((starPress-Art.Heart).Length+14,ActualWidth*0.43)) return;
             orbits.Grabbed=null; ReleaseMouseCapture();
             EndFileHover();
             ExportFiles(star,star.Paths,this);
         }
-        internal void ExportFiles(FileStar star,string[] selection,UIElement source)
+        internal void ExportFiles(FileStar star,string[] selection,UIElement source,bool wholeStar=true)
         {
             string[] available=selection.Where(path=>File.Exists(path) || Directory.Exists(path)).ToArray();
             if(available.Length==0) { Say("原位置已找不到这批文件",4); return; }
             var paths=new StringCollection(); paths.AddRange(available);
             var data=new DataObject(); data.SetFileDropList(paths);
             data.SetData("Preferred DropEffect",new MemoryStream(BitConverter.GetBytes((int)DragDropEffects.Move)));
-            exportingStar=star;
+            exportingStar=star; exportingWholeStar=wholeStar;
             try
             {
                 var result=DragDrop.DoDragDrop(source,data,DragDropEffects.Move);
@@ -138,7 +157,7 @@ namespace BlueStar
                 }
             }
             catch(COMException) { Say("交付未完成，文件仍在轨道上",4); }
-            finally { exportingStar=null; if(draggingFiles || fileLeftAt>=0) EndFileHover(); }
+            finally { exportingStar=null; exportingWholeStar=false; ClearReferencePreview(); if(draggingFiles || fileLeftAt>=0) EndFileHover(); }
         }
 
         // INPUT's union is aligned and sized like MOUSEINPUT, its largest member.

@@ -97,7 +97,7 @@ namespace BlueStar
             protected override void OnRender(DrawingContext dc)
             {
                 dc.PushTransform(new TranslateTransform(-orbits.ShelfOrigin.X,-orbits.ShelfOrigin.Y));
-                orbits.DrawOrbits(dc); dc.Pop();
+                orbits.DrawOrbits(dc,new Rect(orbits.ShelfOrigin,RenderSize)); dc.Pop();
             }
         }
     }

@@ -47,6 +47,8 @@ namespace BlueStar
     {
         public string[] Paths { get; private set; }
         public Point? Dock;
+        public Vector? ReturnOffset;
+        public double ReturnTime;
         public FormattedText Label,CountLabel;
         public readonly double Radius,Phase,Born,Speed;
         readonly double entryRadius;
@@ -104,17 +106,21 @@ namespace BlueStar
         public int Pages {get {return Math.Max(1,(stars.Count+PageSize-1)/PageSize);} }
         public int Rows {get {return Math.Min(PageSize,stars.Count-Page*PageSize);} }
         public Point ShelfOrigin;
-        bool dirty=true;
+        bool dirty=true, dockSettled, dockOnRight;
+        Point dockOrigin;
+        readonly Point[] dockSlots=new Point[PageSize];
         public bool NeedsDraw {get; private set;}
         public double ShelfHeight {get {return Math.Max(90,Rows*42+24)+(Pages>1?30:0);} }
         static readonly double[] lanes={0.23,0.30,0.37};
         SolidColorBrush nextColor=FileStar.BatchColor(0);
+        public SolidColorBrush PointerBrush { get { return pointerStar==null?nextColor:pointerStar.Color; } }
         RadialGradientBrush nextHalo;
         static readonly Geometry Glint=Geometry.Parse("M 0,-10 Q 1,-2 8,0 Q 1,1 0,10 Q -1,1 -8,0 Q -1,-2 0,-10 Z");
         static readonly Pen Edge=new Pen(new SolidColorBrush(Color.FromArgb(175,13,25,41)),1.2);
         public FileStar Grabbed;
         public Point GrabPoint;
-        public Point? Pointer;
+        Point? pointer;
+        FileStar pointerStar;
         int sequence;
         double now;
         Point heart;
@@ -125,21 +131,37 @@ namespace BlueStar
             heart=center; now=time;
             double lastFold=Fold;
             Fold=Math.Max(0,Math.Min(1,Fold+dt*(Sealed?1:-1)/0.94));
-            NeedsDraw=dirty || Fold!=lastFold || Pointer.HasValue || Grabbed!=null || (Fold<1 && stars.Count>0);
-            dirty=false;
+            NeedsDraw=dirty || Fold!=lastFold || pointer.HasValue || Grabbed!=null || (Fold<1 && stars.Count>0);
+            if(dirty) dockSettled=false;
             if(Fold>0)
             {
-                double blend=1-Math.Exp(-13*dt);
-                for(int i=0;i<stars.Count;i++)
+                if(!dockSettled || ShelfOrigin!=dockOrigin || OnRight!=dockOnRight)
                 {
-                    Point target=Slot(i%PageSize);
+                    dockOrigin=ShelfOrigin; dockOnRight=OnRight; dockSettled=true;
+                    double blend=1-Math.Exp(-13*dt);
+                    for(int row=0;row<PageSize;row++) dockSlots[row]=Slot(row);
+                    for(int i=0;i<stars.Count;i++)
+                    {
+                        Point target=dockSlots[i%PageSize];
+                        var star=stars[i];
+                        if(!star.Dock.HasValue || (target-star.Dock.Value).LengthSquared<0.01)
+                            star.Dock=target;
+                        else
+                        {
+                            star.Dock=star.Dock.Value+(target-star.Dock.Value)*blend;
+                            dockSettled=false; NeedsDraw=true;
+                        }
+                    }
+                }
+                int first=Page*PageSize, end=Math.Min(stars.Count,first+PageSize);
+                for(int i=first;!NeedsDraw && i<end;i++)
+                {
                     var star=stars[i];
-                    if(!star.Dock.HasValue || (target-star.Dock.Value).LengthSquared<0.01)
-                        star.Dock=target;
-                    else { star.Dock=star.Dock.Value+(target-star.Dock.Value)*blend; NeedsDraw=true; }
-                    if(i/PageSize==Page && (time-star.Born<0.9 || star.Label==null)) NeedsDraw=true;
+                    NeedsDraw=time-star.Born<0.9 || star.Label==null ||
+                        (star.ReturnOffset.HasValue && time-star.ReturnTime<0.50);
                 }
             }
+            dirty=false;
             if(NeedsDraw) InvalidateVisual();
         }
         public void ChangePage(int delta)
@@ -157,8 +179,16 @@ namespace BlueStar
                 (ShelfHeight-(Pages>1?30:0))/2+(row-(n-1)*0.5)*42);
         }
         static double ArcBow(int n) {return Math.Min(30,9*(n-1));}
-        public void ClearPointer() { Pointer=null; InvalidateVisual(); }
+        public void SetPointer(Point point,FileStar star) { pointer=point; pointerStar=star; }
+        public void ClearPointer() { pointer=null; pointerStar=null; InvalidateVisual(); }
         public void Store(string[] paths,Vector offset,int direction,double time)
+        {
+            stars.Add(CreateStar(paths,offset,direction,time));
+            dirty=true;
+            if(Sealed) Page=Pages-1;
+            InvalidateVisual();
+        }
+        public FileStar CreateStar(string[] paths,Vector offset,int direction,double time)
         {
             double entry=offset.Length/ActualWidth;
             double radius=lanes.OrderBy(lane=>stars.Count(s=>s.Radius==lane)).ThenBy(lane=>Math.Abs(lane-entry)).First();
@@ -170,17 +200,17 @@ namespace BlueStar
                 if(!stars.Any(s=>(s.Direction(time)*s.Radius-pos).Length*ActualWidth<16)) break;
                 angle+=0.30;
             }
-            stars.Add(new FileStar(paths,radius,entry,angle,direction,time,nextColor,nextHalo));
-            dirty=true;
-            if(Sealed) Page=Pages-1;
-            nextColor=FileStar.BatchColor(++sequence); nextHalo=FileStar.Glow(nextColor); InvalidateVisual();
+            var star=new FileStar(paths,radius,entry,angle,direction,time,nextColor,nextHalo);
+            nextColor=FileStar.BatchColor(++sequence); nextHalo=FileStar.Glow(nextColor);
+            return star;
         }
         public FileStar Hit(Point point)
         {
             FileStar closest=null; double best=16*16;
-            for(int i=0;i<stars.Count;i++)
+            int first=Fold>0.5?Page*PageSize:0;
+            int end=Fold>0.5?Math.Min(stars.Count,first+PageSize):stars.Count;
+            for(int i=first;i<end;i++)
             {
-                if(Fold>0.5 && i/PageSize!=Page) continue;
                 var star=stars[i]; Point p=DisplayPosition(star);
                 double d=(p-point).LengthSquared;
                 if(d<=best) { best=d; closest=star; }
@@ -188,11 +218,16 @@ namespace BlueStar
             }
             return closest;
         }
-        public void Remove(FileStar star) { stars.Remove(star); dirty=true; ChangePage(0); InvalidateVisual(); }
+        public void Remove(FileStar star) { if(stars.Remove(star)) { dirty=true; ChangePage(0); InvalidateVisual(); } }
         public void Restore(FileStar star)
         {
             int i=stars.FindIndex(other=>other.Born>star.Born);
             stars.Insert(i<0?stars.Count:i,star); dirty=true; InvalidateVisual();
+        }
+        public void ReturnFromGrip(FileStar star,Point point)
+        {
+            star.ReturnOffset=point-heart; star.ReturnTime=now;
+            Restore(star);
         }
         double Progress(FileStar star)
         {
@@ -207,10 +242,19 @@ namespace BlueStar
         Point DisplayPosition(FileStar star)
         {
             Point a=star.Position(heart,ActualWidth,now);
-            if(Fold==0 || !star.Dock.HasValue) return a;
-            Point b=star.Dock.Value; double u=Progress(star);
-            Point c=Guide(star,a,b);
-            return a+(c-a)*(2*u*(1-u))+(b-a)*(u*u);
+            if(Fold>0 && star.Dock.HasValue)
+            {
+                Point b=star.Dock.Value; double u=Progress(star);
+                Point c=Guide(star,a,b);
+                a+=(c-a)*(2*u*(1-u))+(b-a)*(u*u);
+            }
+            if(star.ReturnOffset.HasValue)
+            {
+                double u=Math.Min(1,(now-star.ReturnTime)/0.45);
+                if(u>=1) star.ReturnOffset=null;
+                else { Point from=heart+star.ReturnOffset.Value; a=from+(a-from)*(u*u*(3-2*u)); }
+            }
+            return a;
         }
         Rect LabelBounds(Point p) { return new Rect(OnRight?p.X+11:p.X-11-LabelWidth,p.Y-12,LabelWidth,24); }
         void DrawLabel(DrawingContext dc,FileStar star,Point p)
@@ -232,28 +276,64 @@ namespace BlueStar
         protected override void OnRender(DrawingContext dc)
         {
             DrawOrbits(dc);
-            if(Pointer.HasValue)
+            if(gripStar!=null)
             {
-                dc.DrawEllipse(nextHalo,null,Pointer.Value,19,19);
-                DrawStar(dc,Pointer.Value,nextColor);
+                dc.PushOpacity(gripOpacity);
+                dc.DrawEllipse(gripStar.Halo,null,gripPoint,16,16);
+                DrawStar(dc,gripPoint,gripStar.Color); dc.Pop();
+            }
+            if(pointer.HasValue)
+            {
+                dc.DrawEllipse(pointerStar==null?nextHalo:pointerStar.Halo,null,pointer.Value,19,19);
+                DrawStar(dc,pointer.Value,PointerBrush);
+            }
+            if(gripHintPoint.HasValue)
+            {
+                double dpi=VisualTreeHelper.GetDpi(this).PixelsPerDip;
+                if(gripHint==null || gripHint.PixelsPerDip!=dpi)
+                    gripHint=new FormattedText("松手钉住参照",CultureInfo.CurrentCulture,FlowDirection.LeftToRight,Font,12,Brushes.AliceBlue,dpi);
+                Point p=gripHintPoint.Value;
+                double w=gripHint.Width+14,h=gripHint.Height+6;
+                var box=new Rect(Math.Max(2,Math.Min(ActualWidth-w-2,p.X-w/2)),p.Y>h+15?p.Y-h-13:p.Y+13,w,h);
+                dc.DrawRoundedRectangle(LabelBack,LabelEdge,box,5,5);
+                dc.DrawText(gripHint,new Point(box.Left+7,box.Top+3));
             }
         }
-        internal void DrawOrbits(DrawingContext dc)
+        Point? gripHintPoint;
+        FormattedText gripHint;
+        public void ShowGripHint(Point? point)
+        {
+            if(gripHintPoint==point) return;
+            gripHintPoint=point; InvalidateVisual();
+        }
+        FileStar gripStar;
+        Point gripPoint;
+        double gripOpacity;
+        public void ShowGripStar(FileStar star,Point point,double opacity)
+        {
+            if(gripStar==star && (star==null || (gripPoint==point && gripOpacity==opacity))) return;
+            gripStar=star; gripPoint=point; gripOpacity=opacity; InvalidateVisual();
+        }
+        internal void DrawOrbits(DrawingContext dc,Rect? viewport=null)
         {
             double mix=Fold*Fold*(3-2*Fold);
-            foreach(var star in stars)
-            {
-                if(mix<1)
+            if(mix<1)
+                foreach(var star in stars)
                 {
                     double radius=ActualWidth*star.Radius;
+                    // Shelf and pet share coordinates, but a track fully outside the shelf
+                    // cannot contribute to its layered window.
+                    double extent=radius+2;
+                    if(viewport.HasValue && !viewport.Value.IntersectsWith(
+                        new Rect(heart.X-extent,heart.Y-extent,2*extent,2*extent))) continue;
                     dc.PushOpacity(0.80*(1-mix)); dc.DrawEllipse(null,star.Track,heart,radius,radius); dc.Pop();
                 }
-            }
             Point? previous=null;
-            for(int i=0;i<stars.Count;i++)
+            int first=mix==1?Page*PageSize:0;
+            int end=mix==1?Math.Min(stars.Count,first+PageSize):stars.Count;
+            for(int i=first;i<end;i++)
             {
                 var star=stars[i]; bool onPage=i/PageSize==Page;
-                if(!onPage && mix==1) continue;
                 double u=Progress(star);
                 var p=star==Grabbed?GrabPoint:DisplayPosition(star);
                 dc.PushOpacity(onPage?1:1-mix);

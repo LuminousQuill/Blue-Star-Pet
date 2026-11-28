@@ -4,7 +4,8 @@ using System.Windows;
 
 namespace BlueStar
 {
-    enum IdleAct { None, Wind, Meteor, Listen, Probe, Dip, Stardust, Curl, Bank, Glide, Constellation }
+    enum IdleAct { None, Wind, Meteor, Listen, Probe, Dip, Stardust, Curl, Bank, Glide, Constellation,
+                   PointFoot, PointFan, CoreSag, RimCrossing, StarSlip }
 
     sealed class IdleMotion
     {
@@ -12,6 +13,7 @@ namespace BlueStar
         public double Age,Weight,Turn;
         public Vector Direction;
         public MeteorFlight Flight;
+        public event Action MeteorStopped;
         public StarChart Chart {get; private set;}
         public int ChartAngle {get; private set;}
         readonly StarChart[] charts=(StarChart[])StarChart.Shapes.Clone();
@@ -19,6 +21,9 @@ namespace BlueStar
         int chartsLeft;
         bool yielding,heardMouse;
         double duration;
+        LegRig[] pointingLegs;
+        Vector lastPointer;
+        public bool Pointing {get {return Act==IdleAct.PointFoot || Act==IdleAct.PointFan;}}
 
         public static double Ease(double u)
         {
@@ -35,7 +40,7 @@ namespace BlueStar
             {
                 case IdleAct.Wind: duration=2.85; break;
                 case IdleAct.Listen: duration=3.75; break;
-                case IdleAct.Meteor: duration=MeteorFlight.Duration; break;
+                case IdleAct.Meteor: duration=flight.Duration; break;
                 case IdleAct.Probe: duration=2.70; break;
                 case IdleAct.Dip: duration=3.85; break;
                 case IdleAct.Stardust: duration=3.0; break;
@@ -43,16 +48,12 @@ namespace BlueStar
                 case IdleAct.Bank: duration=4.18; break;
                 case IdleAct.Glide: duration=4.20; break;
                 case IdleAct.Constellation: duration=3.30; break;
+                case IdleAct.PointFoot: duration=6.40; break;
+                case IdleAct.PointFan: duration=8.00; break;
+                case IdleAct.CoreSag: duration=3.18; break;
+                case IdleAct.RimCrossing: duration=2.62; break;
+                case IdleAct.StarSlip: duration=2.78; break;
                 default: duration=0; break;
-            }
-            if(act==IdleAct.Curl)
-            {
-                foreach(var leg in legs)
-                {
-                    double angle=Vector.AngleBetween(direction,leg.RestToe)*Math.Sign(direction.X);
-                    leg.CurlDelay=(angle<0?angle+360:angle)*(2.12/360);
-                }
-                return;
             }
             if(act==IdleAct.Constellation)
             {
@@ -66,9 +67,31 @@ namespace BlueStar
                 Direction=new Vector(Math.Sin(angle),-Math.Cos(angle));
                 return;
             }
-            Vector side=act==IdleAct.Wind?-direction:direction;
+            RebindLegs(legs);
+        }
+        public void RebindLegs(LegRig[] legs,bool switching=false)
+        {
+            if(Act==IdleAct.None || Act==IdleAct.Constellation) return;
+            if(Pointing)
+            {
+                pointingLegs=(LegRig[])legs.Clone();
+                if(!switching) lastPointer=Direction*160;
+                foreach(var leg in legs) leg.ResetPointing();
+                if(switching) TrackPointer(lastPointer,1);
+                return;
+            }
+            if(Act==IdleAct.Curl)
+            {
+                foreach(var leg in legs)
+                {
+                    double angle=Vector.AngleBetween(Direction,leg.SelectionToe)*Math.Sign(Direction.X);
+                    leg.CurlDelay=(angle<0?angle+360:angle)*(2.12/360);
+                }
+                return;
+            }
+            Vector side=Act==IdleAct.Wind?-Direction:Direction;
             int rank=0;
-            foreach(var leg in legs.OrderByDescending(l=>Vector.Multiply(l.RestToe,side)))
+            foreach(var leg in legs.OrderByDescending(l=>Vector.Multiply(l.SelectionToe,side)))
                 leg.Rank=rank++;
         }
         public void Advance(double dt,bool busy,bool mouseNear)
@@ -81,7 +104,48 @@ namespace BlueStar
             if(heardMouse) Turn=Math.Min(1,Turn+dt/0.50);
             if(Age>=duration || Weight<=0) Stop();
         }
-        public void Stop() { Act=IdleAct.None; Weight=0; Flight=null; }
+        public void Stop()
+        {
+            bool meteor=Act==IdleAct.Meteor;
+            Act=IdleAct.None; Weight=0; Flight=null;
+            if(meteor && MeteorStopped!=null) MeteorStopped();
+        }
+        public void TrackPointer(Vector target,double dt)
+        {
+            if(!Pointing || yielding) return;
+            // Retain the last heading as the cursor crosses the hollow center.
+            if(target.Length<32) target=lastPointer;
+            else lastPointer=target;
+            Vector heading=target/target.Length;
+            if(Age==0) Direction=heading;
+            double turn=Vector.AngleBetween(Direction,heading)*Math.PI/180*(1-Math.Exp(-8*dt));
+            Direction=Direction*Math.Cos(turn)+new Vector(-Direction.Y,Direction.X)*Math.Sin(turn);
+            int count=Act==IdleAct.PointFan?3:1;
+            foreach(var leg in pointingLegs) leg.ScorePointing(heading,count);
+            Array.Sort(pointingLegs,(a,b)=>b.PointScore.CompareTo(a.PointScore));
+            for(int i=0;i<pointingLegs.Length;i++)
+            {
+                // Preserve the order of the three hips across the fan as all toes aim at the same point.
+                int lane=0;
+                if(count==3 && i<count)
+                    for(int j=0;j<count;j++)
+                        lane+=Math.Sign(pointingLegs[i].CompareFanLane(pointingLegs[j],heading));
+                pointingLegs[i].FollowPoint(target,i,count,lane,Age,duration,dt);
+            }
+        }
+        public double FanLean {get {return Act==IdleAct.PointFan?Weight*Beat(Age-0.50,0.75,duration-1.66,duration-0.72):0;}}
+        public double FanGaze {get {return Act==IdleAct.PointFan?Weight*Beat(Age-0.22,0.40,duration-1.38,duration-0.58):0;}}
+        public Vector SagAt(double t)
+        {
+            if(Act!=IdleAct.CoreSag) return new Vector();
+            // Free fall and braking meet at the same velocity. The legs take the load before the slow lift.
+            double fall=Math.Max(0,Math.Min(1,(t-0.35)/0.28));
+            double brake=Math.Max(0,Math.Min(1,(t-0.63)/0.14));
+            double drop=-0.08*Ease(t/0.22)+0.72*fall*fall+0.36*brake*(2-brake)
+                -0.14*Ease((t-0.77)/0.37)-0.86*Ease((t-1.22)/1.55)
+                -0.035*Beat(t-2.31,0.30,0.34,0.60);
+            return new Vector(Math.Sign(Direction.X)*10,36)*(Weight*drop);
+        }
         public double DepthAt(double t)
         {
             if(Act!=IdleAct.Dip) return 0;
@@ -107,7 +171,7 @@ namespace BlueStar
             if(Act==IdleAct.Listen) return Weight*(Direction.X*0.17-mouseLean)*(1-Ease(Turn))*Beat(Age-0.61,0.58,2.18,3.06);
             return 0;
         }
-        public double Flash {get {return Act==IdleAct.Meteor?Weight*Beat(Age-MeteorFlight.FlashTime,0.11,0.13,0.52):0;} }
+        public double Flash {get {return Act==IdleAct.Meteor?Weight*Beat(Age-Flight.FlashTime,0.046,0.081,0.38):0;} }
     }
 
     // Actual window velocity supplies the drag. The stored release pose is also the first coast pose.

@@ -41,49 +41,55 @@ namespace BlueStar
         }
     }
 
+    enum MeteorPattern { Hook, Slingshot, Twin, Switchback }
+
     sealed class MeteorFlight
     {
-        public const double Pass=0.40, RimTime=1.10, Dive=1.43, Impact=1.72;
-        public const double TailLife=0.21, LongestTrail=0.46, FlashTime=Impact+TailLife+0.12, Duration=2.87;
-        public readonly double NearRim,Entry,Arc;
+        public const double LongestTrail=0.125;
+        public readonly MeteorPattern Pattern;
         public readonly Vector CatchSide;
         public readonly Rect Bounds;
-        readonly Vector travel;
-        readonly Point pass,bend1,bend2,rimIn,rimOut,dive1,dive2;
+        public readonly Track[] Tracks;
+        public double TailEnd { get { return EndOfTrail(Tracks[Tracks.Length-1]); } }
+        public double FlashTime { get { return TailEnd+0.035; } }
+        public double Duration { get { return FlashTime+0.54; } }
         readonly Point origin;
-        readonly double scale,rotation,run;
-        MeteorFlight(Point center,double size,double tilt,Vector heading,int hand,double distance)
+        readonly double scale,rotation;
+
+        MeteorFlight(MeteorPattern pattern,Point center,double size,double tilt,Vector heading,int hand,double distance)
         {
-            origin=center; scale=size; rotation=tilt; run=distance;
-            travel=Rotate(heading,-tilt);
+            Pattern=pattern; origin=center; scale=size; rotation=tilt;
+            Vector travel=Rotate(heading,-tilt);
             Vector side=Rotate(new Vector(-heading.Y,heading.X)*hand,-tilt);
-            pass=(Point)(side*102);
-            NearRim=HeartOutline.Facing(side);
-            Entry=HeartOutline.Facing(travel*0.68-side*0.73);
-            rimIn=HeartOutline.At(Entry);
-            var tangent=HeartOutline.Tangent(Entry);
-            int winding=Vector.CrossProduct((Vector)rimIn,tangent)*Vector.CrossProduct(side,travel)>0?1:-1;
-            Arc=winding*0.155; rimOut=HeartOutline.At(Entry+Arc);
-            CatchSide=Rotate((Vector)HeartOutline.At(Entry+0.27*Arc),tilt); CatchSide.Normalize();
-            // Match velocity at both joins. The star is already abeam of the core at the first join.
-            bend1=pass+travel*(run/Pass*(RimTime-Pass)/3);
-            bend2=rimIn-tangent*(winding*25);
-            dive1=rimOut+HeartOutline.Tangent(Entry+Arc)*(winding*11);
-            dive2=(Point)((Vector)rimOut*0.24);
+            var primary=new Track(pattern,travel,side,distance,false);
+            Tracks=pattern==MeteorPattern.Twin
+                ?new[]{primary,new Track(pattern,travel,side,distance,true)}
+                :new[]{primary};
+            CatchSide=Rotate((Vector)primary.Sample(primary.RimTime),tilt);
+            CatchSide.Normalize();
             Rect bounds=Rect.Empty;
-            for(int i=0;i<=96;i++) bounds.Union(Sample(Impact*i/96,center,size,tilt));
+            foreach(var track in Tracks)
+                for(int i=0;i<=120;i++)
+                    bounds.Union(Sample(track,track.Start+(track.Impact-track.Start)*i/120,center,size,tilt));
             bounds.Inflate(26*size+3,26*size+3); Bounds=bounds;
         }
-        public static MeteorFlight Choose(Random random,Point center,double size,double tilt,Rect display)
+
+        public static MeteorFlight Choose(Random random,Point center,double size,double tilt,Rect display,MeteorPattern? previous)
+        {
+            int pick=random.Next(previous.HasValue?3:4);
+            if(previous.HasValue && pick>=(int)previous.Value) pick++;
+            return Choose(random,center,size,tilt,display,(MeteorPattern)pick);
+        }
+        internal static MeteorFlight Choose(Random random,Point center,double size,double tilt,Rect display,MeteorPattern pattern)
         {
             int first=random.Next(8); double slope=(23+random.NextDouble()*18)*Math.PI/180;
-            double distance=360+random.NextDouble()*89;
+            double distance=240+random.NextDouble()*65;
             MeteorFlight best=null; double least=double.PositiveInfinity;
             for(int i=0;i<16;i++)
             {
                 int pick=(first+i)%8, hand=(pick&1)==0?1:-1;
                 var dir=new Vector(((pick&2)==0?1:-1)*Math.Cos(slope),((pick&4)==0?1:-1)*Math.Sin(slope));
-                var flight=new MeteorFlight(center,size,tilt,dir,hand,i<8?distance:distance*0.65);
+                var flight=new MeteorFlight(pattern,center,size,tilt,dir,hand,i<8?distance:distance*0.65);
                 Rect b=flight.Bounds;
                 double excess=Math.Max(0,display.Left-b.Left)+Math.Max(0,b.Right-display.Right)
                     +Math.Max(0,display.Top-b.Top)+Math.Max(0,b.Bottom-display.Bottom);
@@ -97,26 +103,84 @@ namespace BlueStar
             double a=degrees*Math.PI/180,c=Math.Cos(a),s=Math.Sin(a);
             return new Vector(c*v.X-s*v.Y,s*v.X+c*v.Y);
         }
-        public static double TrailLifeAt(double sampleTime)
+        public static double TrailLifeAt(Track track,double time)
         {
-            // Keep the final piece of the flyby visible through the hook, then shorten near the rim.
-            return 0.17+0.285*IdleMotion.Beat(sampleTime-0.17,0.20,0.33,0.93)
-                +0.04*IdleMotion.Ease((sampleTime-0.74)/0.42);
+            return Math.Min(LongestTrail,37/track.SpeedAt(time));
         }
-        static Point Cubic(Point a,Point b,Point c,Point d,double t)
+        public static double EndOfTrail(Track track) { return track.Impact+TrailLifeAt(track,track.Impact); }
+        public Point Sample(Track track,double time,Point live,double liveScale,double liveTilt)
         {
-            double v=1-t;
-            return a+(b-a)*(3*v*v*t)+(c-a)*(3*v*t*t)+(d-a)*(t*t*t);
+            double tether=IdleMotion.Ease((time-track.TurnTime)/(track.RimTime-track.TurnTime));
+            return origin+(live-origin)*tether+Rotate((Vector)track.Sample(time),rotation+(liveTilt-rotation)*tether)
+                *(scale+(liveScale-scale)*tether);
         }
-        public Point Sample(double time,Point live,double liveScale,double liveTilt)
+
+        public sealed class Track
         {
-            Point p;
-            if(time<=Pass) p=pass+travel*(run*(time/Pass-1));
-            else if(time<RimTime) p=Cubic(pass,bend1,bend2,rimIn,(time-Pass)/(RimTime-Pass));
-            else if(time<Dive) p=HeartOutline.At(Entry+Arc*(time-RimTime)/(Dive-RimTime));
-            else p=Cubic(rimOut,dive1,dive2,new Point(),Math.Min(1,(time-Dive)/(Impact-Dive)));
-            double tether=IdleMotion.Ease((time-Pass)/(RimTime-Pass));
-            return origin+(live-origin)*tether+Rotate((Vector)p,rotation+(liveTilt-rotation)*tether)*(scale+(liveScale-scale)*tether);
+            const int Steps=48;
+            const double Acceleration=0.88;
+            readonly Vector travel,side;
+            readonly Vector[] path=new Vector[Steps+1],headings=new Vector[Steps+1];
+            readonly double speed,angle,pull,step,fall;
+            public readonly double Start,TurnTime,RimTime,Impact;
+
+            public Track(MeteorPattern pattern,Vector travel,Vector side,double run,bool second)
+            {
+                this.travel=travel; this.side=side;
+                Start=second?0.12:0;
+                double length=197,turn=151,curve=3.23;
+                speed=304;
+                switch(pattern)
+                {
+                    case MeteorPattern.Hook: length=184; turn=153; curve=3.55; speed=296; break;
+                    case MeteorPattern.Slingshot: length=230; turn=155; curve=2.95; speed=310; break;
+                    case MeteorPattern.Switchback: length=204; turn=142; curve=3.15; speed=323; break;
+                }
+                if(second) length+=30;
+                angle=turn*Math.PI/180; pull=curve; step=length/Steps;
+                TurnTime=Start+run/speed;
+                fall=length/(speed*(1+Acceleration/3));
+                Impact=TurnTime+fall;
+
+                // Integrate the tangent in equal distance steps. The straight extension shares its first tangent.
+                headings[0]=travel;
+                for(int i=1;i<=Steps;i++)
+                {
+                    headings[i]=Heading(i/(double)Steps);
+                    path[i]=path[i-1]+(headings[i-1]+4*Heading((i-0.5)/Steps)+headings[i])*(step/6);
+                }
+                double outside=TurnTime,inside=Impact;
+                for(int i=0;i<12;i++)
+                {
+                    double time=(outside+inside)*0.5;
+                    if(HeartOutline.Shape.FillContains(Sample(time))) inside=time;
+                    else outside=time;
+                }
+                RimTime=inside;
+            }
+            Vector Heading(double progress)
+            {
+                double turn=angle*Math.Pow(progress,pull);
+                return travel*Math.Cos(turn)-side*Math.Sin(turn);
+            }
+            public double SpeedAt(double time)
+            {
+                double u=Math.Max(0,Math.Min(1,(time-TurnTime)/fall));
+                return speed*(1+Acceleration*u*u);
+            }
+            public Point Sample(double time)
+            {
+                if(time<=TurnTime) return (Point)(travel*(speed*(time-TurnTime))-path[Steps]);
+                if(time>=Impact) return new Point();
+                double u=(time-TurnTime)/fall;
+                double distance=Steps*(u+Acceleration*u*u*u/3)/(1+Acceleration/3);
+                int i=Math.Min(Steps-1,(int)distance);
+                double t=distance-i,v=1-t;
+                // Match position and tangent at every subsegment, with no separate brake or rim join.
+                Vector p=path[i]+(path[i+1]-path[i])*(t*t*(3-2*t))
+                    +step*t*v*(headings[i]*v-headings[i+1]*t);
+                return (Point)(p-path[Steps]);
+            }
         }
     }
 }

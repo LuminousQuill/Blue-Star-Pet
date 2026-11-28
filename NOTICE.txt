@@ -1,0 +1,9 @@
+Blue-Star Pet
+
+本项目完全由 Codex 制作。
+
+本桌宠为非官方同人项目，与游戏开发商 Project Moon 无隶属或合作关系。
+「碧蓝新星」的原作设定，以及本项目引用的《脑叶公司》《废墟图书馆》游戏音频等原作素材，其相关权利归 Project Moon 及相应权利人所有。
+
+本版本延续已有声明。仓库目前未声明开源许可证。
+项目主页：https://github.com/LuminousQuill/Blue-Star-Pet

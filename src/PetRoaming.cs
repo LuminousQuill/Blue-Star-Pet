@@ -9,6 +9,7 @@ namespace BlueStar
     {
         public Vector Heading;
         public double Phase,Strength;
+        double lastStroke,settleAge;
 
         public void Follow(Vector tangent,double progress,double duration,double width)
         {
@@ -18,12 +19,14 @@ namespace BlueStar
             // The quadratic path supplies the heading and its eased speed in body lengths per second.
             double speed=length*12*Phase*(1-Phase)/(duration*width);
             Strength=IdleMotion.Ease(Phase/0.12)*Math.Min(1,0.44+7.5*speed);
+            lastStroke=Strength; settleAge=0;
         }
         public void Settle(double dt)
         {
             if(Strength==0) return;
-            Strength*=Math.Exp(-9*dt);
-            if(Strength<0.002) Strength=0;
+            // Release from the last stroke without snapping a fully extended foot back on the first frame.
+            settleAge+=dt;
+            Strength=lastStroke*(1-IdleMotion.Ease(settleAge/0.48));
         }
     }
 
@@ -67,6 +70,8 @@ namespace BlueStar
             e.Cancel=true;
             if(exiting) return;
             exiting=true; exitStart=elapsed.Elapsed.TotalSeconds; exitPresence=Art.Presence;
+            StopMealLens();
+            EndReference();
             audio.PlayMotion(PetCue.Disappear);
             AllowDrop=false; IsHitTestVisible=false;
             CloseStarFiles();
@@ -74,6 +79,7 @@ namespace BlueStar
             if(shelf!=null) shelf.Hide();
             if(meteor!=null) meteor.Hide();
             if(wave!=null) wave.Hide();
+            if(grandWave!=null) { grandWave.Close(); grandWave=null; }
             FinishExit();
         }
         async void FinishExit()

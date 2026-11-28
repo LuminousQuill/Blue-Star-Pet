@@ -2,8 +2,21 @@
 /BlueStar.exe
 /Blue-Star-Pet-Windows.zip
 /碧蓝新星桌宠-Windows.zip
+/release-build/
 
 # Local reference audio and alternate preview
 /BlueStar_ogg/
 /assets/meteor.wav
 /assets/preview.mp4
+/assets/meteorhook.wav
+/assets/meteorslingshot.wav
+/assets/meteortwin.wav
+/assets/meteorswitchback.wav
+/assets/liquid-charge-small.png
+/assets/liquid-charge.png
+/assets/liquid-finish-comparison.png
+/assets/liquid-flow-comparison.mp4
+/assets/liquid-flow.gif
+/assets/liquid-flow.mp4
+/碧蓝新星音效候选/
+/碧蓝新星 - B站封面*.jpg

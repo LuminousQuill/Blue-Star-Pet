@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "Blue-Star Pet",
+    "description": "以碧蓝新星为原型的 Windows 同人桌宠，支持共鸣、文件星轨与窗口夹持。",
+    "repository": "LuminousQuill/Blue-Star-Pet"
+  },
+  "release": {
+    "tag_prefix": "v",
+    "initial_version": "1.0.0",
+    "draft": true,
+    "prerelease": false
+  },
+  "artifact_policy": "release-only",
+  "version_surfaces": [
+    {
+      "path": "README.md",
+      "pattern": "当前版本：\\*\\*v(?P<version>\\d+\\.\\d+\\.\\d+)\\*\\*"
+    },
+    {
+      "path": "src/AssemblyInfo.cs",
+      "pattern": "AssemblyInformationalVersion\\(\"(?P<version>\\d+\\.\\d+\\.\\d+)\"\\)"
+    },
+    {
+      "path": "src/AssemblyInfo.cs",
+      "pattern": "AssemblyFileVersion\\(\"(?P<version>\\d+\\.\\d+\\.\\d+)\\.0\"\\)"
+    }
+  ],
+  "readme": {
+    "path": "README.md",
+    "locales": [{
+      "path": "README.md",
+      "label": "简体中文",
+      "catalog_labels": {
+        "latest": "最新",
+        "version": "版本",
+        "published": "发布日期",
+        "release_notes": "版本说明",
+        "downloads": "下载文件",
+        "open": "查看",
+        "source_zip": "源码 ZIP",
+        "source_tar": "源码 TAR.GZ"
+      }
+    }],
+    "catalog_start": "<!-- release-catalog:start -->",
+    "catalog_end": "<!-- release-catalog:end -->"
+  },
+  "screenshots": [{
+    "path": "docs/assets/starry-core-stages.png",
+    "description": "程序渲染的星空心核四档充能预览，非整屏截图。"
+  }],
+  "artifacts": [{
+    "path": "release-build/Blue-Star-Pet-Windows.zip",
+    "role": "standard",
+    "description": "Windows 便携运行包，包含嵌入素材的 BlueStar.exe、使用说明和项目/素材声明。",
+    "required": true,
+    "download_name": "Blue-Star-Pet-Windows.zip"
+  }]
+}

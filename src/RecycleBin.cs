@@ -175,20 +175,32 @@ namespace BlueStar
     sealed class DropBatch : IDisposable
     {
         public readonly string[] Paths;
-        public readonly Task<long[]> Sizes;
+        public readonly Task<long[]> Sizes,FileCounts;
         readonly CancellationTokenSource cancel=new CancellationTokenSource();
 
         public DropBatch(string[] paths)
         {
             Paths=paths;
             var token=cancel.Token;
-            Sizes=Task.Run(()=>paths.Select(path=>Measure(path,token)).ToArray(),token);
+            var counts=new long[paths.Length];
+            Sizes=Task.Run(delegate {
+                var sizes=new long[paths.Length];
+                for(int i=0;i<paths.Length;i++) sizes[i]=Measure(paths[i],token,out counts[i]);
+                return sizes;
+            },token);
+            FileCounts=ReadCountsAfterMeasure(Sizes,counts);
         }
         public void Dispose() { cancel.Cancel(); cancel.Dispose(); }
 
-        static long Measure(string path,CancellationToken token)
+        static async Task<long[]> ReadCountsAfterMeasure(Task<long[]> sizes,long[] counts)
         {
-            long bytes=0;
+            await sizes.ConfigureAwait(false);
+            return counts;
+        }
+
+        static long Measure(string path,CancellationToken token,out long count)
+        {
+            long bytes=0; count=0;
             var pending=new Stack<string>(); pending.Push(path);
             while(pending.Count>0)
             {
@@ -197,10 +209,16 @@ namespace BlueStar
                 try
                 {
                     var attributes=File.GetAttributes(item);
-                    if((attributes&FileAttributes.ReparsePoint)!=0) continue;
-                    if((attributes&FileAttributes.Directory)==0) bytes+=new FileInfo(item).Length;
-                    else foreach(string child in Directory.EnumerateFileSystemEntries(item))
-                    { token.ThrowIfCancellationRequested(); pending.Push(child); }
+                    if((attributes&FileAttributes.Directory)==0)
+                    {
+                        count++;
+                        bytes+=new FileInfo(item).Length; // Metadata only, including offline placeholders.
+                    }
+                    else if((attributes&FileAttributes.ReparsePoint)==0)
+                    {
+                        foreach(string child in Directory.EnumerateFileSystemEntries(item))
+                        { token.ThrowIfCancellationRequested(); pending.Push(child); }
+                    }
                 }
                 catch(IOException) { } // Raced a move, or part of a folder was unreadable.
                 catch(UnauthorizedAccessException) { }
@@ -211,7 +229,11 @@ namespace BlueStar
 
         public static double Weight(long bytes)
         {
-            return Math.Min(1,Math.Log(1+bytes/65536.0,2)/15);
+            const long MiB=1024L*1024L;
+            if(bytes<100*MiB) return 0;
+            if(bytes<500*MiB) return 1.0/3;
+            if(bytes<1024*MiB) return 2.0/3;
+            return 1;
         }
     }
 }

@@ -22,6 +22,14 @@ namespace BlueStar
         public AbsorbedBatch[] Absorptions { get {return (AbsorbedBatch[])this["Absorptions"];} set {this["Absorptions"]=value;} }
         [UserScopedSetting, DefaultSettingValue("1")]
         public int SizeIndex { get {return (int)this["SizeIndex"];} set {this["SizeIndex"]=value;} }
+        [UserScopedSetting, DefaultSettingValue("1")]
+        public int LegLayout { get {return (int)this["LegLayout"];} set {this["LegLayout"]=value;} }
+        [UserScopedSetting, DefaultSettingValue("0")]
+        public int CoreCharge { get {return (int)this["CoreCharge"];} set {this["CoreCharge"]=value;} }
+        [UserScopedSetting, DefaultSettingValue("0")]
+        public long CoreChargeTicks { get {return (long)this["CoreChargeTicks"];} set {this["CoreChargeTicks"]=value;} }
+        [UserScopedSetting, DefaultSettingValue("False")]
+        public bool LiquidCore { get {return (bool)this["LiquidCore"];} set {this["LiquidCore"]=value;} }
         [UserScopedSetting, DefaultSettingValue("True")]
         public bool Pinned { get {return (bool)this["Pinned"];} set {this["Pinned"]=value;} }
         [UserScopedSetting, DefaultSettingValue("True")]
@@ -42,6 +50,7 @@ namespace BlueStar
         public readonly PetArt Art=new PetArt();
         readonly Stopwatch elapsed=Stopwatch.StartNew();
         TimeSpan lastRenderTime=TimeSpan.MinValue;
+        bool drawingFrame;
         readonly TextBlock message=new TextBlock { Foreground=Brushes.AliceBlue, FontSize=12,
             FontFamily=new FontFamily("Microsoft YaHei UI"), TextAlignment=TextAlignment.Center,
             TextWrapping=TextWrapping.Wrap };
@@ -57,16 +66,27 @@ namespace BlueStar
         Vector velocity;
         bool coasting, releasePending;
         ResonanceWave wave;
+        ResonanceWave preparedWave;
+        GrandWave grandWave;
+        MealLens mealLens;
+        bool grandPulse,grandQueued,callPending;
         MeteorWindow meteor;
+        MeteorPattern? previousMeteor;
+        bool meteorSoundStarted;
         readonly Random idleRandom=new Random();
         readonly IdleAct[] idleActs={IdleAct.Wind,IdleAct.Meteor,IdleAct.Wind,IdleAct.Listen,IdleAct.Meteor,IdleAct.Wind,
-            IdleAct.Probe,IdleAct.Dip,IdleAct.Stardust,IdleAct.Curl,IdleAct.Bank,IdleAct.Glide,IdleAct.Constellation};
+            IdleAct.Probe,IdleAct.Dip,IdleAct.Stardust,IdleAct.Curl,IdleAct.Bank,IdleAct.Glide,IdleAct.Constellation,
+            IdleAct.PointFoot,IdleAct.PointFoot,IdleAct.PointFan,IdleAct.CoreSag,IdleAct.RimCrossing,IdleAct.StarSlip};
         int idleIndex;
         double idleWait,lastLegTap=-10;
         double waveBorn;
-        DateTime focusEnd;
+        const long ChargeLevelTicks=10*TimeSpan.TicksPerMinute,FileChargeTicks=TimeSpan.TicksPerMinute;
+        const int MaxRewardFiles=(int)(3*ChargeLevelTicks/FileChargeTicks);
+        long focusEnd=-1,chargeStamp,chargeTicks;
+        readonly Queue<double> pendingChargeRises=new Queue<double>();
+        double chargeRise=double.NegativeInfinity;
         public TimeSpan FocusDuration { get; private set; }
-        public bool FocusRunning { get { return focusEnd!=DateTime.MinValue; } }
+        public bool FocusRunning { get { return focusEnd>=0; } }
         bool pressed, moving, draggingFiles, handlingDrop, physicalPress;
         Point pressPixel,windowOrigin,dragTarget,sampledDragTarget;
         Point? mouseDownPixel;
@@ -75,7 +95,7 @@ namespace BlueStar
         Matrix dragFromDevice;
         double motionStamp,heldTargetTime;
         ControlWindow panel;
-        public double FocusRemaining { get {return Math.Max(0,(focusEnd-DateTime.UtcNow).TotalSeconds);} }
+        public double FocusRemaining { get {return Math.Max(0,focusEnd-elapsed.Elapsed.Ticks)/(double)TimeSpan.TicksPerSecond;} }
 
         public PetWindow()
         {
@@ -83,6 +103,12 @@ namespace BlueStar
             AllowsTransparency=true; Background=Brushes.Transparent;
             ShowInTaskbar=false; ShowActivated=false; Topmost=Settings.Pinned;
             Settings.SizeIndex=Math.Max(0,Math.Min(2,Settings.SizeIndex));
+            Art.ChargeLevel=Math.Max(0,Math.Min(3,Settings.CoreCharge));
+            long saved=Settings.CoreChargeTicks;
+            chargeTicks=Art.ChargeLevel<3 && saved>=0 && saved<ChargeLevelTicks?saved:0;
+            Art.LiquidCore=Settings.LiquidCore;
+            Settings.LegLayout=Settings.LegLayout==2?2:1;
+            Art.SetLegLayout(Settings.LegLayout);
             Width=Height=sizes[Settings.SizeIndex]; WindowStartupLocation=WindowStartupLocation.Manual;
             Rect work=SystemParameters.WorkArea;
             Left=double.IsNaN(Settings.X)?work.Right-Width-24:Settings.X;
@@ -98,15 +124,14 @@ namespace BlueStar
             grid.Children.Add(bubble); Content=grid;
             AllowDrop=true; DragEnter+=DragOverPet; DragOver+=DragOverPet;
             DragLeave+=delegate {
-                if(!draggingFiles) return;
-                // A hand-drawn loop can briefly leave this window near the tip of a leg.
-                fileLeftAt=elapsed.Elapsed.TotalSeconds; draggingFiles=false;
-                audio.EndHover(); orbits.ClearPointer();
+                ClearReferencePreview();
+                LeaveFileHover();
             }; Drop+=FilesDropped;
             MouseLeftButtonDown+=Press; MouseLeftButtonUp+=Lift;
             MouseMove+=MoveFileStar;
             PreviewKeyDown+=delegate(object s,KeyEventArgs e) {
                 if(e.Key==Key.Escape && orbits.Grabbed!=null) { ReleaseMouseCapture(); e.Handled=true; }
+                else if(e.Key==Key.Escape && HasReference) { EndReference(); e.Handled=true; }
             };
             QueryCursor+=delegate(object s,QueryCursorEventArgs e) {
                 if(orbits.Grabbed!=null || orbits.Hit(e.GetPosition(this))!=null) { e.Cursor=Cursors.Hand; e.Handled=true; }
@@ -114,17 +139,37 @@ namespace BlueStar
             SourceInitialized+=delegate { ((HwndSource)PresentationSource.FromVisual(this)).AddHook(ObserveDragInput); };
             LostMouseCapture+=delegate {
                 if(pressed) EndDrag();
-                if(orbits.Grabbed!=null) { orbits.Grabbed=null; EndFileHover(); }
+                if(orbits.Grabbed!=null) { orbits.Grabbed=null; ClearReferencePreview(); EndFileHover(); }
             };
             MouseRightButtonUp+=delegate { if (!handlingDrop) OpenPanel(); };
             Settings.Volume=Math.Max(0,Math.Min(100,Settings.Volume));
             audio=new PetAudio(Settings.Sound,Settings.Volume);
+            Art.Idle.MeteorStopped+=CloseMeteor;
             roaming=Settings.Roaming;
             binTimer.Tick+=PollBin;
             FocusDuration=TimeSpan.FromMinutes(25);
             idleWait=9+idleRandom.NextDouble()*9;
             Loaded+=delegate { FitToScreen(); SetPresence(0); last=elapsed.Elapsed.TotalSeconds; audio.PlayMotion(PetCue.Appear); Art.Draw(); CompositionTarget.Rendering+=OnFrame; PollBin(null,EventArgs.Empty); binTimer.Start(); };
-            Closed+=delegate { CompositionTarget.Rendering-=OnFrame; binTimer.Stop(); EndFileHover(); Persist(); audio.Dispose(); };
+            Closed+=delegate { CompositionTarget.Rendering-=OnFrame; CloseWaves(); CancelMeteor(); StopMealLens(); binTimer.Stop(); EndReference(); EndFileHover(); Persist(); audio.Dispose(); };
+        }
+        void StopMealLens()
+        {
+            if(mealLens!=null) { mealLens.Close(); mealLens=null; }
+        }
+        void PrepareMealLens(double weight)
+        {
+            if(exiting) return;
+            // Capture the displayed pose after shell success, before starting the short pulse.
+            // A nested WPF render during HWND creation must not advance the previous meal.
+            bool wasDrawing=drawingFrame; drawingFrame=true;
+            try
+            {
+                if(mealLens==null) mealLens=new MealLens();
+                if(!mealLens.Advance(this,Art.Heart,elapsed.Elapsed.TotalSeconds,0,weight,true)) StopMealLens();
+            }
+            catch(ExternalException) { StopMealLens(); }
+            catch(InvalidOperationException) { StopMealLens(); }
+            finally { drawingFrame=wasDrawing; }
         }
         public void Chime() { audio.Play(PetCue.Chime); }
         public void SetSound(bool enabled)
@@ -155,13 +200,91 @@ namespace BlueStar
             if(count==0 && binHadItems) binPulseQueued=true;
             binHadItems=count>0;
         }
-        void StartResonance()
+        bool SettleCharge(long now,int rewardedFiles=0)
         {
-            if(releasePending) return;
+            // Only the part of this online interval before the focus deadline earns double time.
+            long online=now-chargeStamp,focused=Math.Max(0,Math.Min(now,focusEnd)-chargeStamp);
+            chargeStamp=now;
+            int gained=0;
+            if(Art.ChargeLevel<3)
+            {
+                chargeTicks+=online+focused+rewardedFiles*FileChargeTicks;
+                gained=(int)Math.Min(3-Art.ChargeLevel,chargeTicks/ChargeLevelTicks);
+                Art.ChargeLevel+=gained;
+                if(gained>0)
+                {
+                    // Bind the cue to this recoil; later meals must not move an earned cue.
+                    double ready=Math.Max(now/(double)TimeSpan.TicksPerSecond,meal+PetArt.MealImpactEnd(Art.MealWeight));
+                    for(int i=0;i<gained;i++) pendingChargeRises.Enqueue(ready);
+                }
+                chargeTicks=Art.ChargeLevel==3?0:chargeTicks%ChargeLevelTicks;
+            }
+            if(FocusRunning && now>=focusEnd)
+            {
+                focusEnd=-1; Art.FocusProgress=-1;
+                ambient=now/(double)TimeSpan.TicksPerSecond; ambientReleasePending=true;
+                Say("洞察完成 · 新星发来回响",5);
+            }
+            return gained>0;
+        }
+        void AdvanceCharge(long now)
+        {
+            if(SettleCharge(now)) SaveSettings();
+        }
+        void AdvanceChargeRise(double now)
+        {
+            if(pendingChargeRises.Count>0 && now>=pendingChargeRises.Peek() && now-chargeRise>=PetArt.ChargeRiseDuration)
+            {
+                pendingChargeRises.Dequeue(); chargeRise=now;
+                Art.ChargeRiseLevel=Art.ChargeLevel-pendingChargeRises.Count;
+                audio.PlayChargeRise();
+            }
+            Art.ChargeRiseAge=now-chargeRise;
+        }
+        void StartResonance(bool grand)
+        {
+            if(releasePending || grandWave!=null) return;
+            CancelMeteor();
+            grandPulse=callPending=grand;
+            if(grand)
+            {
+                SettleCharge(elapsed.Elapsed.Ticks);
+                Art.ChargeLevel=0; chargeTicks=0;
+                pendingChargeRises.Clear(); chargeRise=double.NegativeInfinity; Art.ChargeRiseAge=double.PositiveInfinity;
+                SaveSettings();
+                Art.Idle.Stop(); ResetRoam();
+            }
             pulse=elapsed.Elapsed.TotalSeconds; releasePending=true;
             audio.Play(PetCue.Charge);
         }
-        public void Persist() { Point home=roamHome??new Point(Left,Top); Settings.X=home.X; Settings.Y=home.Y; try { Settings.Save(); } catch(ConfigurationErrorsException) {} }
+        void CloseWaves()
+        {
+            if(wave!=null) { wave.Close(); wave=null; }
+            if(preparedWave!=null) { preparedWave.Close(); preparedWave=null; }
+            if(grandWave!=null) { grandWave.Close(); grandWave=null; }
+        }
+        public void Persist()
+        {
+            SettleCharge(elapsed.Elapsed.Ticks);
+            SaveSettings();
+        }
+        void SaveSettings()
+        {
+            Settings.CoreCharge=Art.ChargeLevel; Settings.CoreChargeTicks=chargeTicks;
+            Point home=roamHome??new Point(Left,Top); Settings.X=home.X; Settings.Y=home.Y;
+            try { Settings.Save(); } catch(ConfigurationErrorsException) {}
+        }
+        public void SetLiquidCore(bool liquid)
+        {
+            Art.LiquidCore=Settings.LiquidCore=liquid;
+            Art.Draw(); Persist();
+        }
+        public void SetLegLayout(int layout)
+        {
+            Art.SetLegLayout(layout);
+            Settings.LegLayout=layout;
+            Persist();
+        }
         public void SetSize(int i)
         {
             ResetRoam();
@@ -201,16 +324,20 @@ namespace BlueStar
         }
         public void StartFocus(TimeSpan duration)
         {
-            FocusDuration=duration; focusEnd=DateTime.UtcNow+duration;
+            CancelMeteor();
+            long now=elapsed.Elapsed.Ticks; AdvanceCharge(now);
+            FocusDuration=duration; focusEnd=now+duration.Ticks;
             Art.FocusProgress=0;
-            Art.Idle.Stop(); roamStep=RoamStep.Rest; Art.Swim.Strength=0;
-            if(meteor!=null) { meteor.Close(); meteor=null; }
-            SetPresence(1); audio.FadeMotion();
+            // Hold the window here. The busy path fades the current stroke or idle pose in place.
+            roamStep=RoamStep.Rest; audio.FadeMotion();
+            roamWait=Math.Max(roamWait,4); idleWait=Math.Max(idleWait,9);
             Say("洞察观测  "+ClockText(duration.TotalSeconds),3);
         }
         public void CancelFocus()
         {
-            focusEnd=DateTime.MinValue; Art.FocusProgress=-1; Say("观测已取消",2);
+            AdvanceCharge(elapsed.Elapsed.Ticks);
+            if(!FocusRunning) return;
+            focusEnd=-1; Art.FocusProgress=-1; Say("观测已取消",2);
         }
         public async void RequestReturn()
         {
@@ -244,15 +371,20 @@ namespace BlueStar
                 IntPtr owner=new WindowInteropHelper(this).Handle;
                 int result=await RecycleBin.OnShellThread(()=>RecycleBin.SHEmptyRecycleBinW(owner,null,0));
                 long? after=await Task.Run(()=>RecycleBin.ItemCount());
-                if(result>=0 && after==0)
-                {
-                    Settings.Absorptions=new AbsorbedBatch[0]; Persist();
-                    binHadItems=false; binPulseQueued=true;
-                }
-                else if(result<0 && result!=unchecked((int)0x800704C7) && result!=unchecked((int)0x80004004))
-                    Say("沉默不语",3);
+                FinishBinEmpty(result,after);
             }
             finally { binCommand=false; }
+        }
+        void FinishBinEmpty(int result,long? after)
+        {
+            if(result>=0 && after==0)
+            {
+                Settings.Absorptions=new AbsorbedBatch[0]; Persist();
+                binHadItems=false; binPulseQueued=true;
+                grandQueued|=Art.ChargeLevel==3;
+            }
+            else if(result<0 && result!=unchecked((int)0x800704C7) && result!=unchecked((int)0x80004004))
+                Say("沉默不语",3);
         }
         OrbitShelf shelf;
         public void SealCore()
@@ -272,14 +404,16 @@ namespace BlueStar
         void OnFrame(object sender,EventArgs args)
         {
             var frame=(RenderingEventArgs)args;
-            if(frame.RenderingTime==lastRenderTime) return;
+            // Rendering a capture mask or showing a layered HWND can reenter the dispatcher.
+            if(drawingFrame || frame.RenderingTime==lastRenderTime) return;
             lastRenderTime=frame.RenderingTime;
-            Tick(sender,args);
+            drawingFrame=true;
+            try { Tick(sender,args); } finally { drawingFrame=false; }
         }
         bool InteractionBusy(double now)
         {
             return pressed || coasting || draggingFiles || handlingDrop || binCommand || orbits.Sealed || orbits.Grabbed!=null ||
-                exportingStar!=null || panel!=null || starFiles!=null || FocusRunning || wave!=null || now-pulse<2.4 ||
+                exportingStar!=null || HasReference || contactSince>=0 || panel!=null || starFiles!=null || FocusRunning || wave!=null || grandWave!=null || now-pulse<2.4 ||
                 now-meal<2.1 || now-eject<1.4 || now-ambient<2.5 || now-lastLegTap<1.35;
         }
         void AdvanceIdle(double now,double dt,bool mouseNear)
@@ -287,6 +421,7 @@ namespace BlueStar
             bool busy=InteractionBusy(now) || roamStep!=RoamStep.Rest || Art.Presence<1;
             if(Art.Idle.Act!=IdleAct.None)
             {
+                if(busy && Art.Idle.Act==IdleAct.Meteor) { CancelMeteor(); return; }
                 if(busy && Art.Idle.Act==IdleAct.Constellation) audio.FadeMotion();
                 Art.Idle.Advance(dt,busy,mouseNear); return;
             }
@@ -308,25 +443,62 @@ namespace BlueStar
                 Rect screen=ScreenArea();
                 var center=new Point(Left+Art.Heart.X,Top+Art.Heart.Y);
                 if(!screen.Contains(center)) return;
-                flight=MeteorFlight.Choose(idleRandom,center,Width/300*Art.CoreSize,Art.CoreTilt,screen);
-                dir=flight.CatchSide; meteor=new MeteorWindow(this,flight,screen);
+                flight=MeteorFlight.Choose(idleRandom,center,Width/300*Art.CoreSize,Art.CoreTilt,screen,previousMeteor);
+                previousMeteor=flight.Pattern; meteorSoundStarted=false;
+                dir=flight.CatchSide;
+                meteor=new MeteorWindow(this,flight,screen);
+                meteor.Closed+=delegate { meteor=null; };
             }
             Art.BeginIdle(act,dir,flight);
             if(act==IdleAct.Meteor) meteor.Show();
             if(act==IdleAct.Constellation) audio.PlayMotion(PetCue.Constellation);
         }
+        void CancelMeteor()
+        {
+            if(Art.Idle.Act==IdleAct.Meteor) Art.Idle.Stop();
+            else CloseMeteor();
+        }
+        void CloseMeteor()
+        {
+            if(meteorSoundStarted) audio.StopMeteor();
+            meteorSoundStarted=false;
+            if(meteor!=null) meteor.Close();
+        }
+        void AdvanceMeteor()
+        {
+            if(Art.Idle.Act!=IdleAct.Meteor) return;
+            var flight=Art.Idle.Flight;
+            double age=Art.Idle.Age;
+            if(!meteorSoundStarted && Art.Idle.Flash>=0.5)
+            {
+                meteorSoundStarted=true;
+                audio.PlayMeteorFlash();
+            }
+            if(meteor==null) return;
+            if(age>=flight.TailEnd) meteor.Close();
+            else meteor.Advance(age,new Point(Left+Art.Heart.X,Top+Art.Heart.Y),
+                Art.CoreSize*Width/300,Art.CoreTilt,Art.Idle.Weight);
+        }
         void Tick(object sender,EventArgs args)
         {
-            double now=elapsed.Elapsed.TotalSeconds, dt=Math.Min(0.13,now-last); last=now;
+            long stamp=elapsed.Elapsed.Ticks;
+            double now=stamp/(double)TimeSpan.TicksPerSecond, dt=Math.Min(0.13,now-last); last=now;
+            AdvanceCharge(stamp); AdvanceChargeRise(now);
             if(exiting)
             {
+                CloseWaves();
+                CancelMeteor();
                 Art.Swim.Settle(dt);
                 AdvanceExit(now);
                 Art.Time=now; Art.Draw(); return;
             }
+            // Sample against the pose most recently presented, before updating the legs or shell.
+            if(mealLens!=null && !mealLens.Advance(this,Art.Heart,now,now-meal,Art.MealWeight,false))
+                StopMealLens();
             var position=Forms.Cursor.Position;
             var pixel=new Point(position.X,position.Y);
             SampleMotion(now,pixel);
+            AdvanceReference(now,dt);
             var cursor=PointFromScreen(pixel);
             if(AdvanceRoaming(now,dt,cursor)) cursor=PointFromScreen(pixel);
             UpdateFileSurface(cursor);
@@ -334,34 +506,25 @@ namespace BlueStar
             {
                 bool inside=Art.InsideHeart(cursor);
                 if(inside && !draggingFiles) StartFileHover(orbits.Grabbed.Paths,true);
-                else if(!inside && draggingFiles) EndFileHover();
+                else if(!inside && draggingFiles) LeaveFileHover();
             }
             double x=(cursor.X-Width/2)/(Width*0.55), y=(cursor.Y-Height*0.43)/(Height*0.55);
             double near=Math.Min(1,Math.Max(0,1.18-Math.Sqrt(x*x+y*y)*0.52)), blend=1-Math.Exp(-9*dt);
             double aim=moving || coasting?0:near;
-            if(!FocusRunning)
-            {
-                Art.AimX+=(Math.Max(-1,Math.Min(1,x))*aim-Art.AimX)*blend;
-                Art.AimY+=(Math.Max(-1,Math.Min(1,y))*aim-Art.AimY)*blend;
-                Art.Attention+=(near-Art.Attention)*blend;
-            }
-            if(binPulseQueued && !releasePending && wave==null)
-            { binPulseQueued=false; StartResonance(); }
+            Art.AimX+=(Math.Max(-1,Math.Min(1,x))*aim-Art.AimX)*blend;
+            Art.AimY+=(Math.Max(-1,Math.Min(1,y))*aim-Art.AimY)*blend;
+            Art.Attention+=(near-Art.Attention)*blend;
+            if((binPulseQueued || grandQueued) && !releasePending && wave==null && grandWave==null)
+            { StartResonance(grandQueued); grandQueued=binPulseQueued=false; }
             audio.Advance(dt);
             double remaining=FocusRemaining;
-            bool focusDone=FocusRunning && remaining==0;
-            if(focusDone)
-            {
-                focusEnd=DateTime.MinValue;
-                ambient=now; ambientReleasePending=true;
-                Say("洞察完成 · 新星发来回响",5);
-            }
             Art.AmbientAge=now-ambient;
             Art.EjectAge=now-eject;
             Art.Seal=Math.Max(0,Math.Min(1,Art.Seal+dt*(orbits.Sealed?1.55:-1.8)));
             Art.Gravity+=(((draggingFiles || handlingDrop)?1:0)-Art.Gravity)*blend;
             Art.HoverWeight+=(hoverWeight-Art.HoverWeight)*blend;
             Art.Time=now; Art.PulseAge=now-pulse; Art.MealAge=now-meal;
+            Art.GrandAge=grandPulse?Art.PulseAge:double.PositiveInfinity;
             Art.FocusProgress=remaining>0?1-remaining/FocusDuration.TotalSeconds:-1;
             if(draggingFiles)
             { message.Text=orbits.Sealed?"拖至心核松开暂存":canRecycleHover && Art.InsideHeart(cursor)?"松开移入回收站":"五秒内绕心两圈暂存"; bubble.Visibility=Visibility.Visible; }
@@ -371,14 +534,10 @@ namespace BlueStar
                 else bubble.Visibility=Visibility.Hidden;
             }
             AdvanceIdle(now,dt,(cursor-Art.Heart).Length<Width*0.64);
-            Art.Draw();
-            if(meteor!=null)
-            {
-                if(Art.Idle.Act!=IdleAct.Meteor || Art.Idle.Age>MeteorFlight.Impact+MeteorFlight.TailLife)
-                { meteor.Close(); meteor=null; }
-                else meteor.Advance(Art.Idle.Age,new Point(Left+Art.Heart.X,Top+Art.Heart.Y),Art.CoreSize*Width/300,Art.CoreTilt,Art.Idle.Weight);
-            }
-            if(draggingFiles && orbits.Grabbed==null) orbits.Pointer=cursor;
+            if(Art.Idle.Pointing) Art.Idle.TrackPointer((cursor-Art.Heart)*(300/Width),dt);
+            Art.Draw(moving || coasting);
+            AdvanceMeteor();
+            if(draggingFiles && orbits.Grabbed==null) orbits.SetPointer(cursor,exportingStar);
             if(shelf!=null) shelf.UpdatePlacement();
             orbits.Advance(Art.Heart,now);
             if(shelf!=null)
@@ -391,15 +550,52 @@ namespace BlueStar
                 ambientReleasePending=false;
                 audio.Play(PetCue.Ambient);
             }
-            if (releasePending && Art.PulseAge>=PetArt.ReleaseBeat)
+            if(callPending && Art.PulseAge>=GrandWave.PrepareTime && grandWave==null)
+                grandWave=new GrandWave(this);
+            if(releasePending && !grandPulse && preparedWave==null &&
+                Art.PulseAge>=PetArt.ReleaseBeat-0.24 && Art.PulseAge<PetArt.ReleaseBeat)
+            {
+                WaveAnchor anchor;
+                if(WaveAnchor.TryRead(this,Art,Art.Heart,true,out anchor))
+                {
+                    preparedWave=new ResonanceWave(this,anchor);
+                    preparedWave.ShowPrepared();
+                }
+            }
+            if(callPending && Art.PulseAge>=GrandWave.CallTime)
+            {
+                callPending=false;
+                if(Art.PulseAge<GrandWave.Release) audio.PlayLayer(PetCue.GrandCall);
+                if(wave!=null) { wave.Close(); wave=null; }
+            }
+            if (releasePending && Art.PulseAge>=(grandPulse?GrandWave.Release:PetArt.ReleaseBeat))
             {
                 releasePending=false;
-                if (wave!=null) wave.Close();
-                var center=new Point(Left+Art.Heart.X,Top+Art.Heart.Y);
-                wave=new ResonanceWave(this,ScreenArea(true),center);
                 waveBorn=now;
-                audio.Play(PetCue.Resonance);
-                wave.Show();
+                if(grandPulse)
+                {
+                    audio.PlayLayer(PetCue.GrandStrike); audio.PlayLayer(PetCue.GrandChoir);
+                }
+                else
+                {
+                    if(wave!=null) { wave.Close(); wave=null; }
+                    audio.Play(PetCue.Resonance);
+                    WaveAnchor anchor;
+                    if(WaveAnchor.TryRead(this,Art,Art.Heart,true,out anchor))
+                    {
+                        wave=preparedWave;
+                        if(wave==null) { wave=new ResonanceWave(this,anchor); wave.Show(); }
+                        wave.Emit(anchor);
+                    }
+                    else if(preparedWave!=null) preparedWave.Close();
+                    preparedWave=null;
+                }
+            }
+            if(grandWave!=null)
+            {
+                double age=releasePending?Art.PulseAge-GrandWave.Release:now-waveBorn;
+                if(age<GrandWave.Duration) grandWave.Advance(this,age);
+                else { grandWave.Close(); grandWave=null; grandPulse=false; }
             }
             if (wave!=null)
             {
@@ -410,6 +606,7 @@ namespace BlueStar
 
         void SampleMotion(double now,Point cursorPixel)
         {
+            if(referenceTether!=null) SampleReferencePress(cursorPixel);
             if(pressed)
             {
                 if(!physicalPress || DragButtonDown()) UpdateDragTarget(cursorPixel);
@@ -497,9 +694,15 @@ namespace BlueStar
         void Press(object sender, MouseButtonEventArgs e)
         {
             if (handlingDrop || binCommand) return;
+            if(referenceTether!=null && e.StylusDevice==null && polledReferenceDrag &&
+                (pressed || !DragButtonDown())) { e.Handled=true; return; }
             if(PressFileStar(e)) return;
-            physicalPress=e.StylusDevice==null;
-            pressPixel=physicalPress && mouseDownPixel.HasValue?mouseDownPixel.Value:PointToScreen(e.GetPosition(this));
+            BeginPetPress(e.StylusDevice==null && mouseDownPixel.HasValue?mouseDownPixel.Value:PointToScreen(e.GetPosition(this)),e.StylusDevice==null);
+            CaptureMouse(); e.Handled=true;
+        }
+        void BeginPetPress(Point pixel,bool physical)
+        {
+            pressPixel=pixel; physicalPress=physical;
             var point=PointFromScreen(pressPixel);
             pressedHeart=Art.InsideHeart(point);
             pressedLeg=pressedHeart?-1:Art.LegAt(point);
@@ -508,7 +711,6 @@ namespace BlueStar
             sampledDragTarget=dragTarget=windowOrigin=new Point(Left,Top);
             heldTargetTime=0;
             motionStamp=elapsed.Elapsed.TotalSeconds;pressed=true;moving=false;coasting=false;velocity=new Vector();
-            CaptureMouse(); e.Handled=true;
         }
         void EndDrag()
         {
@@ -544,8 +746,13 @@ namespace BlueStar
             if(IsMouseCaptured) ReleaseMouseCapture();
             if(click && pressedHeart)
             {
-                if(orbits.Sealed) { CloseStarFiles(); orbits.Sealed=false; }
-                else StartResonance();
+                bool sealedCore=orbits.Sealed;
+                if(sealedCore) { CloseStarFiles(); orbits.Sealed=false; }
+                bool gained=SettleCharge(elapsed.Elapsed.Ticks);
+                bool full=Art.ChargeLevel==3;
+                if(full && (releasePending || grandWave!=null)) grandQueued=true;
+                else if(!grandQueued && (full || !sealedCore)) StartResonance(full);
+                if(gained && Art.ChargeLevel>0) SaveSettings();
             }
             else if(click && pressedLeg>=0) { lastLegTap=elapsed.Elapsed.TotalSeconds; Art.BendLeg(pressedLeg,lastLegTap); }
         }
@@ -555,7 +762,16 @@ namespace BlueStar
                 fileDragLatched=latchReleased=false;
             var point=e.GetPosition(this);
             bool returning=exportingStar!=null;
-            bool accepted=!binCommand && !handlingDrop && (returning?!orbits.Sealed && Art.InsideHeart(point):!fileDragLatched) && e.Data.GetDataPresent(DataFormats.FileDrop,false) &&
+            Point anchor;
+            if(returning && exportingWholeStar && ReferenceTarget(exportingStar.Paths,point,out anchor))
+            {
+                if(draggingFiles || fileLeftAt>=0) EndFileHover();
+                PreviewReference(anchor,point);
+                e.Effects=e.AllowedEffects&DragDropEffects.Move; e.Handled=true; return;
+            }
+            if(returning) ClearReferencePreview();
+            bool outsideReturningHeart=returning && !orbits.Sealed && !Art.InsideHeart(point);
+            bool accepted=!binCommand && !handlingDrop && (returning?!orbits.Sealed && !outsideReturningHeart:!fileDragLatched) && e.Data.GetDataPresent(DataFormats.FileDrop,false) &&
                 (e.AllowedEffects&(DragDropEffects.Copy|DragDropEffects.Move|DragDropEffects.Link))!=0;
             if(accepted && !draggingFiles)
             {
@@ -563,29 +779,37 @@ namespace BlueStar
                 accepted=paths.Length>0;
                 if(accepted) StartFileHover(paths,(e.AllowedEffects&DragDropEffects.Move)!=0);
             }
-            if(!accepted) EndFileHover();
             e.Effects=DragDropEffects.None; e.Handled=true;
-            if(!accepted) return;
-            orbits.Pointer=point;
-            if(orbits.Sealed)
+            if(!accepted)
             {
-                if(Art.InsideHeart(point))
-                    e.Effects=(e.AllowedEffects&DragDropEffects.Copy)!=0?DragDropEffects.Copy:
-                        (e.AllowedEffects&DragDropEffects.Link)!=0?DragDropEffects.Link:DragDropEffects.Move;
+                ClearReferencePreview();
+                if(outsideReturningHeart) LeaveFileHover(); else EndFileHover();
                 return;
             }
+            orbits.SetPointer(point,exportingStar);
             if(returning) { e.Effects=e.AllowedEffects&DragDropEffects.Move; return; }
             Vector offset=point-Art.Heart;
             double now=elapsed.Elapsed.TotalSeconds;
-            int direction=gesture.Trace(offset,ActualWidth,now);
+            int direction=orbits.Sealed?0:gesture.Trace(offset,ActualWidth,now);
             if(direction!=0 && (e.KeyStates&DragDropKeyStates.LeftMouseButton)!=0)
             {
                 orbits.Store(hoverBatch.Paths,offset,direction,now);
                 fileDragLatched=true; latchReleased=false;
+                ClearReferencePreview();
                 EndFileHover();
                 // The originating window owns the OLE drag loop. Escape ends it without a source-side drop.
                 if(DragButtonDown()) CancelShellDrag();
                 Say("已暂存 · 点击星星查看，向外拖出取用",4);
+                return;
+            }
+            bool grip=ReferenceTarget(hoverBatch.Paths,point,out anchor);
+            if(grip) PreviewReference(anchor,point);
+            else ClearReferencePreview();
+            if(grip || orbits.Sealed)
+            {
+                if(grip || Art.InsideHeart(point))
+                    e.Effects=(e.AllowedEffects&DragDropEffects.Copy)!=0?DragDropEffects.Copy:
+                        (e.AllowedEffects&DragDropEffects.Link)!=0?DragDropEffects.Link:DragDropEffects.Move;
                 return;
             }
             if(canRecycleHover && Art.InsideHeart(point)) e.Effects=DragDropEffects.Move;
@@ -596,13 +820,14 @@ namespace BlueStar
             if(fileLeftAt>=0 && (elapsed.Elapsed.TotalSeconds-fileLeftAt>ReentryGrace ||
                 !paths.SequenceEqual(hoverBatch.Paths,StringComparer.OrdinalIgnoreCase))) EndFileHover();
             fileLeftAt=-1;
+            audio.StartHover();
+            draggingFiles=true; canRecycleHover=canRecycle; messageUntil=0;
             if(hoverBatch==null)
             {
+                if(canRecycle && !orbits.Sealed) Art.StartHoverTwitch(elapsed.Elapsed.TotalSeconds);
                 hoverBatch=new DropBatch(paths);
                 ReadHoverSize(hoverBatch);
             }
-            draggingFiles=true; canRecycleHover=canRecycle; messageUntil=0;
-            audio.StartHover();
         }
         async void ReadHoverSize(DropBatch batch)
         {
@@ -612,6 +837,13 @@ namespace BlueStar
                 if(hoverBatch==batch) hoverWeight=DropBatch.Weight(sizes.Sum());
             }
             catch(OperationCanceledException) { }
+        }
+        void LeaveFileHover()
+        {
+            if(!draggingFiles) return;
+            // Crossing a heart or window edge briefly still belongs to the same drag.
+            fileLeftAt=elapsed.Elapsed.TotalSeconds; draggingFiles=false;
+            audio.EndHover(); orbits.ClearPointer();
         }
         void EndFileHover()
         {
@@ -647,18 +879,29 @@ namespace BlueStar
         {
             // The shell operation belongs to this process. Never request source-side deletion.
             e.Effects=DragDropEffects.None; e.Handled=true;
-            if (binCommand || handlingDrop || (exportingStar==null && fileDragLatched) || !Art.InsideHeart(e.GetPosition(this)) ||
-                (e.AllowedEffects&(orbits.Sealed?(DragDropEffects.Copy|DragDropEffects.Link|DragDropEffects.Move):DragDropEffects.Move))==0 ||
+            const DragDropEffects fileEffects=DragDropEffects.Copy|DragDropEffects.Move|DragDropEffects.Link;
+            if (binCommand || handlingDrop || exiting || (exportingStar==null && fileDragLatched) || (e.AllowedEffects&fileEffects)==0 ||
                 !e.Data.GetDataPresent(DataFormats.FileDrop,false))
-            { EndFileHover(); return; }
+            { ClearReferencePreview(); EndFileHover(); return; }
             var paths=DropPaths(e);
+            var point=e.GetPosition(this);
+            Point anchor;
+            if((exportingStar==null || (exportingWholeStar && paths.SequenceEqual(exportingStar.Paths,StringComparer.OrdinalIgnoreCase))) &&
+                ReferenceTarget(paths,point,out anchor))
+            {
+                var star=exportingStar??orbits.CreateStar(paths,point-Art.Heart,1,elapsed.Elapsed.TotalSeconds);
+                OpenReference(star,anchor); return;
+            }
+            ClearReferencePreview();
+            if(!Art.InsideHeart(point) || (!orbits.Sealed && (e.AllowedEffects&DragDropEffects.Move)==0))
+            { EndFileHover(); return; }
             if(paths.Length==0) { EndFileHover(); Say("此项目无法投递",3); return; }
             if(orbits.Sealed)
             {
                 EndFileHover();
                 if(exportingStar==null)
                 {
-                    orbits.Store(paths,e.GetPosition(this)-Art.Heart,1,elapsed.Elapsed.TotalSeconds);
+                    orbits.Store(paths,point-Art.Heart,1,elapsed.Elapsed.TotalSeconds);
                     Say("已暂存 "+paths.Length+" 项",2);
                 }
                 return;
@@ -686,14 +929,20 @@ namespace BlueStar
                 Say("正在移入回收站…",3600);
                 string[] files=batch.Paths;
                 long[] sizes=await batch.Sizes;
+                long[] fileCounts=await batch.FileCounts;
                 hoverWeight=DropBatch.Weight(sizes.Sum());
                 long recycledBytes=0;
+                int rewardedFiles=0;
                 var recycled=new List<RecycledFile>();
                 // Shell providers use an STA. Keep their disk work off the animation thread.
                 string[] errors=await RecycleBin.OnShellThread(delegate {
                     var failed=new List<string>();
                     for(int i=0;i<files.Length;i++)
-                        try { recycled.Add(RecycleBin.SendTracked(files[i])); recycledBytes+=sizes[i]; }
+                        try
+                        {
+                            recycled.Add(RecycleBin.SendTracked(files[i])); recycledBytes+=sizes[i];
+                            rewardedFiles+=(int)Math.Min(MaxRewardFiles-rewardedFiles,fileCounts[i]);
+                        }
                         catch(Exception ex) { failed.Add(Path.GetFileName(files[i])+" — "+ex.Message); }
                     return failed.ToArray();
                 });
@@ -701,12 +950,16 @@ namespace BlueStar
                 if(star!=null) star.Delivered(recycled.Select(f=>f.OriginalPath).ToArray());
                 if(count>0)
                 {
+                    double weight=DropBatch.Weight(recycledBytes);
+                    PrepareMealLens(weight);
+                    long stamp=elapsed.Elapsed.Ticks;
+                    meal=stamp/(double)TimeSpan.TicksPerSecond;
+                    Art.MealWeight=weight;
+                    SettleCharge(stamp,rewardedFiles);
                     var history=new List<AbsorbedBatch>(Settings.Absorptions??new AbsorbedBatch[0]);
                     history.Add(new AbsorbedBatch { Files=recycled.ToArray() });
-                    Settings.Absorptions=history.ToArray(); Persist();
-                    meal=elapsed.Elapsed.TotalSeconds;
+                    Settings.Absorptions=history.ToArray(); SaveSettings();
                     binHadItems=true;
-                    Art.MealWeight=DropBatch.Weight(recycledBytes);
                     audio.Play(PetCue.Absorb);
                 }
                 string result="已回收 "+count+" 项";

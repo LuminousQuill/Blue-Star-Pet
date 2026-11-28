@@ -207,9 +207,9 @@ namespace BlueStar
             };
             var volume=new StackPanel {Orientation=Orientation.Horizontal,MinHeight=28};
             volume.Children.Add(slider); volume.Children.Add(level); Row("总音量",volume);
-            var top=Button(pet.Topmost?"开启":"关闭",delegate {});
-            top.Click+=delegate { pet.Topmost=!pet.Topmost; Topmost=pet.Topmost; pet.Settings.Pinned=pet.Topmost;
-                top.Content=pet.Topmost?"开启":"关闭"; pet.Persist(); };
+            var top=Button(pet.Settings.Pinned?"开启":"关闭",delegate {});
+            top.Click+=delegate { pet.SetPinned(!pet.Settings.Pinned); Topmost=pet.Topmost;
+                top.Content=pet.Settings.Pinned?"开启":"关闭"; };
             Row("始终置顶",top);
             var roam=Button(pet.Settings.Roaming?"开启":"关闭",delegate {});
             roam.ToolTip="在附近缓慢游荡，偶尔闪现到另一处";
@@ -217,26 +217,32 @@ namespace BlueStar
             roam.Click+=delegate { pet.SetRoaming(!pet.Settings.Roaming); roam.Content=pet.Settings.Roaming?"开启":"关闭"; };
             Row("自行移动",roam);
             AddStartupSetting();
-            var sizes=new StackPanel { Orientation=Orientation.Horizontal };
-            var buttons=new Button[3];
-            string[] labels={"小","中","大"};
-            for (int i=0;i<3;i++)
-            {
-                int selected=i;
-                buttons[i]=Button(labels[i],delegate {
-                    pet.SetSize(selected);
-                    foreach (var b in buttons) { b.ClearValue(BackgroundProperty); b.ClearValue(ForegroundProperty); b.ClearValue(BorderBrushProperty); }
-                    Accent(buttons[selected]); pet.PlacePanel(this);
-                });
-                buttons[i].Margin=new Thickness(3,0,0,0); sizes.Children.Add(buttons[i]);
-                if (i==pet.Settings.SizeIndex) Accent(buttons[i]);
-            }
-            Row("桌宠大小",sizes); Divider();
+            ChoiceRow("心核风格",new[]{"晶体","星空"},pet.Settings.LiquidCore?1:0,i=>pet.SetLiquidCore(i==1));
+            ChoiceRow("腿部分布",new[]{"辐射","台座"},pet.Settings.LegLayout-1,i=>pet.SetLegLayout(i+1));
+            ChoiceRow("桌宠大小",new[]{"小","中","大"},pet.Settings.SizeIndex,i=>{ pet.SetSize(i); pet.PlacePanel(this); });
+            Divider();
             var bottom=new DockPanel();
             var exit=Button("退出桌宠",delegate { Close(); pet.Close(); });
             DockPanel.SetDock(exit,Dock.Right); bottom.Children.Add(exit);
             var bin=Button("打开回收站",delegate { Close(); Process.Start("explorer.exe","shell:RecycleBinFolder"); });
             bin.HorizontalAlignment=HorizontalAlignment.Left; bottom.Children.Add(bin); body.Children.Add(bottom);
+        }
+        void ChoiceRow(string title,string[] labels,int active,Action<int> select)
+        {
+            var choices=new StackPanel { Orientation=Orientation.Horizontal };
+            for(int i=0;i<labels.Length;i++)
+            {
+                int index=i;
+                var button=Button(labels[i],delegate {
+                    select(index);
+                    var previous=(Button)choices.Children[active];
+                    previous.ClearValue(BackgroundProperty); previous.ClearValue(ForegroundProperty); previous.ClearValue(BorderBrushProperty);
+                    active=index; Accent((Button)choices.Children[index]);
+                });
+                button.Margin=new Thickness(3,0,0,0); choices.Children.Add(button);
+                if(i==active) Accent(button);
+            }
+            Row(title,choices);
         }
     }
 }
